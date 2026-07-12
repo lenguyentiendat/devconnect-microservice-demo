@@ -7,6 +7,8 @@ import com.devconnect.feed.service.FeedService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/feed/posts")
 public class FeedController {
@@ -22,6 +24,11 @@ public class FeedController {
         PostResponse response = feedService.createPost(request);
 
         return ApiResponse.success("Post created successfully", response);
+    }
+
+    @GetMapping
+    public ApiResponse<List<PostResponse>> getPosts() {
+        return ApiResponse.success("Posts found", feedService.getPosts());
     }
 
     @GetMapping("/{postId}")

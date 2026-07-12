@@ -21,6 +21,8 @@
     <modules>
         <module>user-service</module>
         <module>feed-service</module>
+        <module>search-service</module>
+        <module>notification-service</module>
     </modules>
 
     <properties>

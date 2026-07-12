@@ -1,0 +1,22 @@
+server:
+  port: ${SEARCH_SERVICE_PORT:8083}
+
+spring:
+  application:
+    name: search-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: search-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.devconnect.search.event
+        spring.json.value.default.type: com.devconnect.search.event.PostCreatedEvent
+        spring.json.use.type.headers: false
+
+app:
+  kafka:
+    topics:
+      post-events: post-events

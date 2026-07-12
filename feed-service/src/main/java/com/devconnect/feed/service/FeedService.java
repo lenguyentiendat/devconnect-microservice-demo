@@ -6,6 +6,8 @@ import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.exception.DownstreamServiceException;
+import com.devconnect.feed.event.PostCreatedEvent;
+import com.devconnect.feed.event.PostEventPublisher;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
@@ -13,6 +15,8 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
 import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,11 +25,13 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FeedService {
 
     private final RestClient userServiceRestClient;
+    private final PostEventPublisher postEventPublisher;
 
     private final Map<String, PostResponse> posts = new ConcurrentHashMap<>();
 
-    public FeedService(RestClient userServiceRestClient) {
+    public FeedService(RestClient userServiceRestClient, PostEventPublisher postEventPublisher) {
         this.userServiceRestClient = userServiceRestClient;
+        this.postEventPublisher = postEventPublisher;
     }
 
     public PostResponse createPost(CreatePostRequest request) {
@@ -44,6 +50,16 @@ public class FeedService {
 
         posts.put(post.postId(), post);
 
+        PostCreatedEvent event = new PostCreatedEvent(
+                UUID.randomUUID().toString(),
+                "POST_CREATED",
+                post.postId(),
+                post.authorId(),
+                post.content(),
+                LocalDateTime.now()
+        );
+        postEventPublisher.publishPostCreated(event);
+
         return post;
     }
 
@@ -55,6 +71,12 @@ public class FeedService {
         }
 
         return post;
+    }
+
+    public List<PostResponse> getPosts() {
+        return posts.values().stream()
+                .sorted(Comparator.comparing(PostResponse::createdAt).reversed())
+                .toList();
     }
 
     private UserStatusResponse getAuthorStatus(String authorId) {
