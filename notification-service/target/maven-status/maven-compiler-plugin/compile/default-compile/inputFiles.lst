@@ -1,7 +1,7 @@
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\controller\NotificationController.java
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\dto\ApiResponse.java
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\dto\NotificationResponse.java
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\event\PostCreatedEvent.java
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\event\PostCreatedEventListener.java
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\NotificationServiceApplication.java
-D:\devconnect-platform-project\notification-service\src\main\java\com\devconnect\notification\service\NotificationService.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\controller\NotificationController.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\dto\ApiResponse.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\dto\NotificationResponse.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\event\PostCreatedEvent.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\event\PostCreatedEventListener.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\NotificationServiceApplication.java
+D:\devconnect-microservice-demo\notification-service\src\main\java\com\devconnect\notification\service\NotificationService.java

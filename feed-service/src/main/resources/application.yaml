@@ -20,6 +20,13 @@ services:
     base-url: ${USER_SERVICE_BASE_URL:http://localhost:8081}
 
 app:
+  async:
+    post:
+      # Dedicated bounded pool for the blocking User Service call in create-post.
+      core-pool-size: ${POST_ASYNC_CORE_POOL_SIZE:4}
+      max-pool-size: ${POST_ASYNC_MAX_POOL_SIZE:16}
+      queue-capacity: ${POST_ASYNC_QUEUE_CAPACITY:100}
+      await-termination-seconds: ${POST_ASYNC_AWAIT_TERMINATION_SECONDS:30}
   kafka:
     topics:
       post-events: post-events
