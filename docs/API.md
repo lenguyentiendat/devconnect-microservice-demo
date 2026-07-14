@@ -1,12 +1,14 @@
 # REST API reference
 
+> Điều hướng: [Mục lục](README.md) · [Quick start](../README.md) · [Kiến trúc](ARCHITECTURE.md) · [Events](EVENTS.md)
+
 ## 1. Quy ước chung
 
 Base URL local phụ thuộc service:
 
 | Service | Base URL |
 |---|---|
-| User | `http://localhost:8081` |
+| User | `http://localhost:3000` |
 | Feed | `http://localhost:8082` |
 | Search | `http://localhost:8083` |
 | Notification | `http://localhost:8084` |
@@ -31,9 +33,22 @@ Error do `feed-service` và `user-service` chủ động tạo có dạng:
 }
 ```
 
-Tất cả timestamp là `LocalDateTime` được Jackson serialize theo ISO-8601 nhưng không chứa timezone/UTC offset, ví dụ `2026-07-14T10:15:30.1234567`.
+Tất cả timestamp API là `LocalDateTime` được Jackson serialize theo ISO-8601 nhưng không chứa timezone/UTC offset. Feed Service tạo thời gian theo UTC, truncate về millisecond để khớp Cassandra `timestamp`, ví dụ `2026-07-14T03:15:30.123`.
 
 Project chưa version API, chưa có authentication, pagination hay OpenAPI endpoint.
+
+### Danh sách endpoint
+
+| Method | Path | Service | Success |
+|---|---|---|---:|
+| GET | `/internal/users/{userId}/status` | User | 200 |
+| POST | `/api/feed/posts` | Feed | 200 |
+| GET | `/api/feed/posts` | Feed | 200 |
+| GET | `/api/feed/posts/{postId}` | Feed | 200 |
+| GET | `/api/search/posts?keyword=...` | Search | 200 |
+| GET | `/api/notifications/users/{userId}` | Notification | 200 |
+
+Không endpoint nào yêu cầu token trong bản demo. `/internal/**` chỉ mang ý nghĩa service-to-service theo convention; nó vẫn có thể truy cập từ host qua port `3000`. Bên trong Compose network, User Service vẫn lắng nghe port `8081`.
 
 ## 2. User Service
 
@@ -48,7 +63,7 @@ Endpoint này được thiết kế cho service-to-service call, dù demo chưa 
 Ví dụ:
 
 ```powershell
-Invoke-RestMethod "http://localhost:8081/internal/users/u001/status"
+Invoke-RestMethod "http://localhost:3000/internal/users/u001/status"
 ```
 
 Response `200 OK`:
@@ -111,7 +126,7 @@ Response `200 OK`:
     "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
     "authorId": "u001",
     "content": "Spring Boot and Kafka",
-    "createdAt": "2026-07-14T10:15:30.1234567"
+    "createdAt": "2026-07-14T03:15:30.123"
   }
 }
 ```
@@ -140,7 +155,7 @@ Ví dụ error body:
 }
 ```
 
-HTTP response chỉ xác nhận post đã được kiểm tra và lưu trong `feed-service`; không đảm bảo search index/notification đã sẵn sàng hoặc Kafka đã acknowledge message.
+HTTP response chỉ xác nhận post đã được kiểm tra và logged batch Cassandra đã hoàn tất; không đảm bảo search index/notification đã sẵn sàng hoặc Kafka đã acknowledge message.
 
 ### Lấy danh sách post
 
@@ -165,7 +180,7 @@ Response `200 OK`:
       "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
       "authorId": "u001",
       "content": "Spring Boot and Kafka",
-      "createdAt": "2026-07-14T10:15:30.1234567"
+      "createdAt": "2026-07-14T03:15:30.123"
     }
   ]
 }

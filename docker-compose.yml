@@ -1,4 +1,54 @@
 services:
+  postgres:
+    image: postgres:18.4
+    container_name: devconnect-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: devconnect_users
+      POSTGRES_USER: devconnect
+      POSTGRES_PASSWORD: devconnect
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devconnect -d devconnect_users"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  cassandra:
+    image: cassandra:5.0.8
+    container_name: devconnect-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: devconnect-local
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 100M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE CLUSTER'"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  cassandra-init:
+    image: cassandra:5.0.8
+    container_name: devconnect-cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        cqlsh cassandra 9042 -e "CREATE KEYSPACE IF NOT EXISTS devconnect_feed WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1};"
+    restart: "no"
+
   kafka:
     image: apache/kafka:4.1.2
     container_name: devconnect-kafka
@@ -19,6 +69,12 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -26,7 +82,111 @@ services:
     ports:
       - "8085:8080"
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     environment:
       KAFKA_CLUSTERS_0_NAME: devconnect-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  user-service:
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
+    image: devconnect/user-service:local
+    container_name: devconnect-user-service
+    init: true
+    ports:
+      - "3000:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/devconnect_users
+      POSTGRES_USERNAME: devconnect
+      POSTGRES_PASSWORD: devconnect
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  feed-service:
+    build:
+      context: .
+      dockerfile: feed-service/Dockerfile
+    image: devconnect/feed-service:local
+    container_name: devconnect-feed-service
+    init: true
+    ports:
+      - "8082:8082"
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+    environment:
+      CASSANDRA_CONTACT_POINTS: cassandra:9042
+      CASSANDRA_LOCAL_DATACENTER: datacenter1
+      CASSANDRA_KEYSPACE: devconnect_feed
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      USER_SERVICE_BASE_URL: http://user-service:8081
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 35s
+
+  search-service:
+    build:
+      context: .
+      dockerfile: search-service/Dockerfile
+    image: devconnect/search-service:local
+    container_name: devconnect-search-service
+    init: true
+    ports:
+      - "8083:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8083'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    image: devconnect/notification-service:local
+    container_name: devconnect-notification-service
+    init: true
+    ports:
+      - "8084:8084"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8084'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  cassandra-data:

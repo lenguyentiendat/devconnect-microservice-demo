@@ -1,5 +1,7 @@
 # Kiến trúc hệ thống
 
+> Điều hướng: [Mục lục](README.md) · [Docker](DOCKER.md) · [Database](DATABASE.md) · [API](API.md) · [Events](EVENTS.md)
+
 ## 1. Mục tiêu và phạm vi
 
 DevConnect minh họa một use case nhỏ nhưng có đủ hai kiểu giao tiếp thường gặp trong microservice:
@@ -13,15 +15,15 @@ Use case trung tâm là tạo post. Tác giả phải tồn tại và có trạn
 
 ### `user-service`
 
-Sở hữu thông tin trạng thái user và chỉ cung cấp endpoint nội bộ `GET /internal/users/{userId}/status`.
+Sở hữu thông tin trạng thái user trong PostgreSQL và chỉ cung cấp endpoint nội bộ `GET /internal/users/{userId}/status`. Spring Data JPA cung cấp repository; Flyway quản lý schema và seed data.
 
-Dữ liệu demo được hard-code bằng `Map.of`:
+Dữ liệu demo được tạo bởi migration `V1__create_users.sql`:
 
 - `u001`: `ACTIVE`
 - `u002`: `ACTIVE`
 - `u003`: `INACTIVE`
 
-Service không có API tạo/cập nhật user và không dùng database.
+Service chưa có API tạo/cập nhật user; muốn thay đổi dữ liệu cần migration mới hoặc thao tác trực tiếp trong môi trường local.
 
 ### `feed-service`
 
@@ -30,7 +32,7 @@ Là service điều phối luồng tạo post:
 - Validate `authorId` và `content` không rỗng.
 - Gọi `user-service` bằng Spring `RestClient`.
 - Áp dụng rule tác giả phải `ACTIVE`.
-- Lưu post vào `ConcurrentHashMap`.
+- Ghi post vào Cassandra bằng hai read model `posts_by_feed` và `posts_by_id`.
 - Phát `POST_CREATED` bằng `KafkaTemplate`.
 - Cung cấp API lấy danh sách và chi tiết post.
 
@@ -48,6 +50,17 @@ Consume `POST_CREATED` và tạo một notification cho chính tác giả. Servi
 
 Idempotency này cũng chỉ nằm trong memory, nên không còn hiệu lực sau restart.
 
+### Bản đồ code chính
+
+| Module | Entry point | HTTP adapter | Business/persistence | Messaging |
+|---|---|---|---|---|
+| User | `UserServiceApplication` | `UserInternalController` | `UserService`, `UserRepository`, `UserEntity` | Không |
+| Feed | `FeedServiceApplication` | `FeedController` | `AsyncPostService`, `FeedService`, `CassandraPostStore` | `PostEventPublisher` |
+| Search | `SearchServiceApplication` | `SearchController` | `PostSearchService` | `PostCreatedEventListener` |
+| Notification | `NotificationServiceApplication` | `NotificationController` | `NotificationService` | `PostCreatedEventListener` |
+
+Controller chỉ xử lý HTTP contract; service chứa use case; repository/store xử lý persistence; listener/publisher là messaging adapter.
+
 ## 3. Luồng tạo post
 
 ```mermaid
@@ -58,6 +71,8 @@ sequenceDiagram
     participant AP as AsyncPostService
     participant FS as FeedService
     participant US as user-service
+    participant PG as PostgreSQL
+    participant CA as Cassandra
     participant K as Kafka
     participant SS as search-service
     participant NS as notification-service
@@ -68,9 +83,12 @@ sequenceDiagram
     Note over FC: Servlet request được chuyển sang async mode
     AP->>FS: createPost(request) trên post-async-* thread
     FS->>US: GET /internal/users/{id}/status
+    US->>PG: SELECT user by ID
+    PG-->>US: user/status
     US-->>FS: ApiResponse<UserStatusResponse>
     alt User ACTIVE
-        FS->>FS: Lưu post trong memory
+        FS->>CA: Logged batch: feed row + ID row
+        CA-->>FS: Write applied
         FS->>K: send POST_CREATED (key = postId)
         FS-->>AP: PostResponse
         AP-->>FC: Complete future
@@ -115,15 +133,28 @@ Trong cùng một group, Kafka phân phối mỗi partition cho một consumer i
 
 ## 4. Dữ liệu và quyền sở hữu
 
-| Dữ liệu | Service sở hữu | Storage hiện tại | Mất khi restart |
+| Dữ liệu | Service sở hữu | Storage hiện tại | Mất khi restart app |
 |---|---|---|---|
-| User status | `user-service` | Immutable in-memory map | Trở về seed data |
-| Post | `feed-service` | `ConcurrentHashMap<postId, post>` | Có |
+| User status | `user-service` | PostgreSQL `users` | Không |
+| Post | `feed-service` | Cassandra `posts_by_feed`, `posts_by_id` | Không |
 | Search index | `search-service` | `ConcurrentHashMap<postId, post>` | Có |
 | Notification | `notification-service` | `ConcurrentHashMap<notificationId, notification>` | Có |
 | Processed event IDs | `notification-service` | `ConcurrentHashMap<eventId, boolean>` | Có |
 
 Không service nào đọc trực tiếp storage của service khác. `feed-service` lấy trạng thái user qua API; search và notification xây read model riêng từ event.
+
+### PostgreSQL schema
+
+Flyway tạo bảng `users(user_id varchar primary key, status varchar not null)` và check constraint giới hạn status ở `ACTIVE`/`INACTIVE`. Hibernate chạy với `ddl-auto=validate`, do đó application không tự sửa schema và sẽ fail startup nếu mapping không khớp migration.
+
+### Cassandra query model
+
+Cassandra được thiết kế theo query thay vì chuẩn hóa:
+
+- `posts_by_feed`: partition key `feed_id`; clustering key `(created_at DESC, post_id)`. Endpoint danh sách đọc partition `global` và nhận thứ tự mới nhất trước mà không cần scan/sort application-side.
+- `posts_by_id`: partition key `post_id`. Endpoint chi tiết lookup trực tiếp, không dùng `ALLOW FILTERING`.
+
+Hai row được ghi trong một logged batch. Batch đa partition chỉ hợp lý ở đây vì mỗi request có đúng hai row cần atomicity; không dùng nó cho bulk write. Timestamp được lưu dưới dạng Cassandra `timestamp` (UTC, độ chính xác millisecond) rồi chuyển về `LocalDateTime` ở API boundary.
 
 ## 5. Consistency và failure semantics
 
@@ -135,7 +166,7 @@ Không service nào đọc trực tiếp storage của service khác. `feed-serv
 
 Hai thao tác không nằm trong cùng transaction:
 
-1. Post được đưa vào map.
+1. Post được ghi vào hai Cassandra table bằng logged batch.
 2. `KafkaTemplate.send()` được gọi bất đồng bộ.
 3. API trả thành công mà không chờ broker acknowledge.
 
@@ -169,7 +200,8 @@ Chi tiết body và status code nằm trong [REST API reference](API.md).
 
 ## 7. Khả năng scale
 
-- Các map local không được chia sẻ giữa nhiều instance. Scale ngang `feed-service` sẽ làm mỗi instance có tập post khác nhau; API GET cho kết quả không nhất quán.
+- User và Feed có thể chia sẻ persistent storage khi scale ngang, nhưng cần connection-pool/load test và migration coordination.
+- Partition `global` của `posts_by_feed` sẽ tăng không giới hạn và dồn write vào một logical partition. Production nên bucket theo tenant/user/time window và phân trang qua bucket.
 - Scale consumer service tạo read model riêng trên từng instance. Với cùng consumer group, mỗi instance chỉ nhận một phần partition nhưng lại phục vụ request trên local memory, nên mỗi instance không có index đầy đủ.
 - Không có load balancer, gateway hay discovery trong repository.
 - `postTaskExecutor` giới hạn concurrency nhưng kích thước pool cần được đo bằng load test và giới hạn theo sức chịu tải của `user-service`.
@@ -180,15 +212,15 @@ Vì vậy cấu trúc hiện tại chỉ nên chạy một instance cho mỗi se
 
 Các nâng cấp quan trọng, theo thứ tự ưu tiên hợp lý:
 
-1. Thay in-memory map bằng database thuộc quyền sở hữu từng service.
-2. Dùng Transactional Outbox ở `feed-service` để commit post và outbox record trong cùng transaction; relay outbox sang Kafka.
+1. Persist search index/notification/dedup state; cân nhắc OpenSearch cho full-text search và Cassandra cho notification theo user.
+2. Bổ sung outbox/CDC phù hợp Cassandra hoặc chuyển transactional post/outbox sang PostgreSQL để tránh khoảng trống giữa lưu post và publish Kafka.
 3. Persistent idempotency/inbox cho consumer, kèm retry có backoff và dead-letter topic.
 4. Định nghĩa schema event có version; dùng schema registry hoặc contract test để kiểm soát compatibility.
 5. Cấu hình connect/read timeout, retry có giới hạn và circuit breaker cho HTTP call tới `user-service`.
 6. Thêm authentication/authorization; không public endpoint `/internal/**` ra ngoài gateway.
 7. Thêm Actuator health/readiness, Micrometer metrics, structured logging, correlation ID và distributed tracing.
 8. Bổ sung integration test với Kafka thật/Testcontainers và end-to-end test.
-9. Pin tất cả container image version và bổ sung Dockerfile/deployment manifest cho application service.
+9. Pin mọi image (Kafka UI hiện vẫn dùng `latest`) và bổ sung Dockerfile/deployment manifest cho application service.
 10. Thiết kế pagination, deterministic ordering và API versioning trước khi có dữ liệu lớn.
 
 ## 9. Quy ước package
@@ -203,3 +235,19 @@ Mỗi module dùng package gốc `com.devconnect.<service>` và chia theo vai tr
 - `exception`: domain/downstream exception và HTTP mapping.
 
 Project cố ý giữ event record riêng trong từng module để các service không phụ thuộc compile-time vào một shared Java library. Đổi event contract vì thế phải được đồng bộ giữa producer và consumer, hoặc cần một cơ chế schema/version tốt hơn.
+
+## 10. Runtime và deployment local
+
+Docker Compose đóng gói toàn bộ hệ thống thành 9 service. Application giao tiếp bằng DNS name trong default Compose network:
+
+| Caller | Dependency URL trong container |
+|---|---|
+| User Service | `jdbc:postgresql://postgres:5432/devconnect_users` |
+| Feed Service | `cassandra:9042`, `kafka:29092`, `http://user-service:8081` |
+| Search Service | `kafka:29092` |
+| Notification Service | `kafka:29092` |
+| Kafka UI | `kafka:29092` |
+
+Host chỉ dùng `localhost` qua published port. Không dùng `localhost` để gọi container khác vì trong container, `localhost` luôn là chính container đó.
+
+Mỗi application image được multi-stage build và chạy bằng non-root user. Chi tiết dependency, healthcheck và workflow nằm trong [Docker và Ubuntu/WSL](DOCKER.md).

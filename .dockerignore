@@ -1,0 +1,11 @@
+.git
+.idea
+.codex
+.agents
+**/target
+**/.mvn
+**/mvnw
+**/mvnw.cmd
+**/*.log
+docs
+*.md

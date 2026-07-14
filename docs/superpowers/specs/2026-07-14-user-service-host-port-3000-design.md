@@ -22,7 +22,6 @@ Tránh xung đột với process đang chiếm cổng `8081` trên Ubuntu, đồ
 ## Xác minh
 
 - Kiểm tra cấu hình Compose render mapping host `3000` tới container `8081`.
-- Kiểm tra không còn tài liệu nào hướng dẫn client host gọi `localhost:8081`.
+- Kiểm tra tài liệu Compose/API hướng dẫn client host gọi `localhost:3000`; `localhost:8081` chỉ còn trong hướng dẫn chạy application trực tiếp trên host với cấu hình mặc định.
 - Kiểm tra các tham chiếu nội bộ `user-service:8081` và healthcheck `8081` vẫn còn nguyên.
 - Chạy toàn bộ Maven test để phát hiện regression.
-

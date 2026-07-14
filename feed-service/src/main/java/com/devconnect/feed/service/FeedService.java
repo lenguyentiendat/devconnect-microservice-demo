@@ -8,30 +8,36 @@ import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.exception.DownstreamServiceException;
 import com.devconnect.feed.event.PostCreatedEvent;
 import com.devconnect.feed.event.PostEventPublisher;
+import com.devconnect.feed.persistence.PostStore;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+
+import static java.time.ZoneOffset.UTC;
+import static java.time.temporal.ChronoUnit.MILLIS;
 
 @Service
 public class FeedService {
 
     private final RestClient userServiceRestClient;
     private final PostEventPublisher postEventPublisher;
+    private final PostStore postStore;
 
-    private final Map<String, PostResponse> posts = new ConcurrentHashMap<>();
-
-    public FeedService(RestClient userServiceRestClient, PostEventPublisher postEventPublisher) {
+    public FeedService(
+            RestClient userServiceRestClient,
+            PostEventPublisher postEventPublisher,
+            PostStore postStore
+    ) {
         this.userServiceRestClient = userServiceRestClient;
         this.postEventPublisher = postEventPublisher;
+        this.postStore = postStore;
     }
 
     public PostResponse createPost(CreatePostRequest request) {
@@ -41,14 +47,18 @@ public class FeedService {
             throw new BusinessException("Author is not active");
         }
 
+        LocalDateTime createdAt = LocalDateTime.ofInstant(
+                Instant.now().truncatedTo(MILLIS),
+                UTC
+        );
         PostResponse post = new PostResponse(
                 UUID.randomUUID().toString(),
                 request.authorId(),
                 request.content(),
-                LocalDateTime.now()
+                createdAt
         );
 
-        posts.put(post.postId(), post);
+        postStore.save(post);
 
         PostCreatedEvent event = new PostCreatedEvent(
                 UUID.randomUUID().toString(),
@@ -56,7 +66,7 @@ public class FeedService {
                 post.postId(),
                 post.authorId(),
                 post.content(),
-                LocalDateTime.now()
+                createdAt
         );
         postEventPublisher.publishPostCreated(event);
 
@@ -64,19 +74,12 @@ public class FeedService {
     }
 
     public PostResponse getPostById(String postId) {
-        PostResponse post = posts.get(postId);
-
-        if (post == null) {
-            throw new BusinessException("Post not found");
-        }
-
-        return post;
+        return postStore.findById(postId)
+                .orElseThrow(() -> new BusinessException("Post not found"));
     }
 
     public List<PostResponse> getPosts() {
-        return posts.values().stream()
-                .sorted(Comparator.comparing(PostResponse::createdAt).reversed())
-                .toList();
+        return postStore.findAll();
     }
 
     private UserStatusResponse getAuthorStatus(String authorId) {

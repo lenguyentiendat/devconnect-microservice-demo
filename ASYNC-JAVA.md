@@ -1,5 +1,7 @@
 # Áp dụng Async Java trong DevConnect
 
+> Điều hướng: [Mục lục documentation](docs/README.md) · [Kiến trúc](docs/ARCHITECTURE.md) · [Development](docs/DEVELOPMENT.md)
+
 ## 1. Mục tiêu
 
 Luồng tạo bài viết ban đầu chạy hoàn toàn trên thread HTTP:
@@ -125,24 +127,22 @@ File `feed-service/src/test/java/com/devconnect/feed/controller/FeedControllerAs
 
 ## 4. Chạy project
 
-Yêu cầu: JDK 21, Docker và Docker Compose.
+Để chạy full stack chỉ cần Docker và Docker Compose. JDK 21/Maven chỉ cần khi chạy test hoặc application trực tiếp trên host.
 
-Khởi động Kafka tại thư mục gốc:
-
-```powershell
-docker compose up -d
-```
-
-Mở bốn terminal và chạy:
+Build và khởi động toàn bộ hệ thống tại thư mục gốc:
 
 ```powershell
-.\user-service\mvnw.cmd -f .\user-service\pom.xml spring-boot:run
-.\feed-service\mvnw.cmd -f .\feed-service\pom.xml spring-boot:run
-.\feed-service\mvnw.cmd -f .\search-service\pom.xml spring-boot:run
-.\feed-service\mvnw.cmd -f .\notification-service\pom.xml spring-boot:run
+docker compose up -d --build
 ```
 
-Wrapper của `feed-service` có thể chạy các module còn lại thông qua `-f`.
+Kiểm tra trạng thái và theo dõi log application:
+
+```powershell
+docker compose ps -a
+docker compose logs -f user-service feed-service search-service notification-service
+```
+
+Muốn chạy application trực tiếp bằng Maven để debug, chỉ khởi động các infrastructure service như hướng dẫn trong `docs/DEVELOPMENT.md`.
 
 ## 5. Kiểm tra API
 
@@ -198,7 +198,7 @@ Không nên chuyển bước kiểm tra tác giả sang kiểu fire-and-forget, 
 
 ## 7. Lưu ý production
 
-- Dữ liệu demo đang nằm trong `ConcurrentHashMap`; restart service sẽ mất dữ liệu. Khi dùng database, nên cân nhắc Transactional Outbox để tránh trường hợp lưu post thành công nhưng gửi Kafka thất bại.
+- User đã được lưu trong PostgreSQL và post trong Cassandra; search index/notification vẫn ở `ConcurrentHashMap`. Cần giải pháp outbox/CDC để tránh trường hợp lưu post Cassandra thành công nhưng gửi Kafka thất bại.
 - Đặt timeout cho lời gọi User Service. Async không tự tạo timeout; nó chỉ chuyển nơi chờ sang pool khác.
 - Theo dõi active thread, queue size, thời gian thực thi và số lần reject bằng Micrometer/Actuator.
 - Truyền correlation ID/MDC sang worker nếu hệ thống dùng distributed tracing.

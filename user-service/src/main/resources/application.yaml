@@ -4,3 +4,16 @@ server:
 spring:
   application:
     name: user-service
+
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/devconnect_users}
+    username: ${POSTGRES_USERNAME:devconnect}
+    password: ${POSTGRES_PASSWORD:devconnect}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
