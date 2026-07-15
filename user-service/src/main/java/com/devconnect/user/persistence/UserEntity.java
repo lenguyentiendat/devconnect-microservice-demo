@@ -31,4 +31,8 @@ public class UserEntity {
     public String getStatus() {
         return status;
     }
+
+    public void updateStatus(String status) {
+        this.status = status;
+    }
 }
