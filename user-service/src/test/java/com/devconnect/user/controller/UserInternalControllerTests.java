@@ -64,6 +64,49 @@ class UserInternalControllerTests {
     }
 
     @Test
+    void rejectsMissingCreateUserId() throws Exception {
+        mockMvc.perform(post("/api/users")
+                        .contentType("application/json")
+                        .content("""
+                                {"status":"ACTIVE"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("userId is required"))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        verifyNoInteractions(userService);
+    }
+
+    @Test
+    void rejectsOversizedCreateUserId() throws Exception {
+        String userId = "x".repeat(65);
+
+        mockMvc.perform(post("/api/users")
+                        .contentType("application/json")
+                        .content("""
+                                {"userId":"%s","status":"ACTIVE"}
+                                """.formatted(userId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("userId must not exceed 64 characters"));
+
+        verifyNoInteractions(userService);
+    }
+
+    @Test
+    void rejectsMalformedCreateBody() throws Exception {
+        mockMvc.perform(post("/api/users")
+                        .contentType("application/json")
+                        .content("{not-json}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("Malformed request body"));
+
+        verifyNoInteractions(userService);
+    }
+
+    @Test
     void rejectsDuplicateCreate() throws Exception {
         when(userService.createUser("u001", "ACTIVE"))
                 .thenThrow(new UserAlreadyExistsException("User already exists"));
@@ -108,6 +151,43 @@ class UserInternalControllerTests {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("User not found"));
+    }
+
+    @Test
+    void rejectsInvalidUpdateStatus() throws Exception {
+        mockMvc.perform(put("/api/users/u004")
+                        .contentType("application/json")
+                        .content("""
+                                {"status":"SUSPENDED"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("status must be ACTIVE or INACTIVE"));
+
+        verifyNoInteractions(userService);
+    }
+
+    @Test
+    void mapsUnexpectedServiceFailureToStandardError() throws Exception {
+        when(userService.updateUser("u004", "ACTIVE"))
+                .thenThrow(new IllegalStateException("database unavailable"));
+
+        mockMvc.perform(put("/api/users/u004")
+                        .contentType("application/json")
+                        .content("""
+                                {"status":"ACTIVE"}
+                                """))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("Internal server error"));
+    }
+
+    @Test
+    void keepsUnknownRouteAsNotFound() throws Exception {
+        mockMvc.perform(get("/api/unknown"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("Resource not found"));
     }
 
     @Test
