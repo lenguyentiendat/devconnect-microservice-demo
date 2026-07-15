@@ -41,6 +41,8 @@ Project chưa version API, chưa có authentication, pagination hay OpenAPI endp
 
 | Method | Path | Service | Success |
 |---|---|---|---:|
+| POST | `/api/users` | User | 201 |
+| PUT | `/api/users/{userId}` | User | 200 |
 | GET | `/internal/users/{userId}/status` | User | 200 |
 | POST | `/api/feed/posts` | Feed | 200 |
 | GET | `/api/feed/posts` | Feed | 200 |
@@ -51,6 +53,72 @@ Project chưa version API, chưa có authentication, pagination hay OpenAPI endp
 Không endpoint nào yêu cầu token trong bản demo. `/internal/**` chỉ mang ý nghĩa service-to-service theo convention; nó vẫn có thể truy cập từ host qua port `3000`. Bên trong Compose network, User Service vẫn lắng nghe port `8081`.
 
 ## 2. User Service
+
+### Tạo user
+
+```http
+POST /api/users
+Content-Type: application/json
+```
+
+Request body:
+
+| Field | Kiểu | Bắt buộc | Rule |
+|---|---|---|---|
+| `userId` | string | Có | Không blank, tối đa 64 ký tự và chưa tồn tại. |
+| `status` | string | Có | Chỉ nhận `ACTIVE` hoặc `INACTIVE`. |
+
+Ví dụ:
+
+```powershell
+$body = @{ userId = "u004"; status = "ACTIVE" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://localhost:3000/api/users" -ContentType "application/json" -Body $body
+```
+
+Response `201 Created`:
+
+```json
+{
+  "success": true,
+  "message": "User created successfully",
+  "data": {
+    "userId": "u004",
+    "status": "ACTIVE"
+  }
+}
+```
+
+Nếu `userId` đã tồn tại, API trả `409 Conflict` với message `User already exists`. Body thiếu, blank, `userId` dài hơn 64 ký tự hoặc status ngoài hai giá trị hợp lệ trả `400 Bad Request`.
+
+### Cập nhật user
+
+```http
+PUT /api/users/{userId}
+Content-Type: application/json
+```
+
+Body chỉ chứa status mới; endpoint không cho đổi `userId` và không tự tạo user:
+
+```json
+{
+  "status": "INACTIVE"
+}
+```
+
+Response `200 OK`:
+
+```json
+{
+  "success": true,
+  "message": "User updated successfully",
+  "data": {
+    "userId": "u004",
+    "status": "INACTIVE"
+  }
+}
+```
+
+User không tồn tại nhận `404 Not Found` với message `User not found`. Status thiếu, blank hoặc không phải `ACTIVE`/`INACTIVE` nhận `400 Bad Request`.
 
 ### Lấy trạng thái user
 
@@ -294,6 +362,14 @@ Endpoint luôn trả 200; user không có notification nhận `data: []`. Thứ 
 Nếu không dùng PowerShell:
 
 ```bash
+curl -X POST http://localhost:3000/api/users \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"u004","status":"ACTIVE"}'
+
+curl -X PUT http://localhost:3000/api/users/u004 \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"INACTIVE"}'
+
 curl -X POST http://localhost:8082/api/feed/posts \
   -H 'Content-Type: application/json' \
   -d '{"authorId":"u001","content":"Spring Boot and Kafka"}'

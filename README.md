@@ -40,7 +40,7 @@ flowchart LR
 
 | Thành phần | Port mặc định | Vai trò |
 |---|---:|---|
-| `user-service` | 3000 (host) / 8081 (container) | Cung cấp trạng thái user nội bộ. |
+| `user-service` | 3000 (host) / 8081 (container) | Tạo/cập nhật user và cung cấp trạng thái nội bộ. |
 | `feed-service` | 8082 | Tạo/đọc post, kiểm tra tác giả và publish event. |
 | `search-service` | 8083 | Consume event, lập chỉ mục và tìm post theo nội dung. |
 | `notification-service` | 8084 | Consume event và tạo notification cho tác giả. |
@@ -131,6 +131,24 @@ Project có sẵn ba user demo:
 | `u002` | `ACTIVE` | Có |
 | `u003` | `INACTIVE` | Không |
 
+Có thể tạo và cập nhật user qua User API:
+
+```powershell
+$user = @{ userId = "u004"; status = "ACTIVE" } | ConvertTo-Json
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:3000/api/users" `
+  -ContentType "application/json" `
+  -Body $user
+
+$status = @{ status = "INACTIVE" } | ConvertTo-Json
+Invoke-RestMethod `
+  -Method Put `
+  -Uri "http://localhost:3000/api/users/u004" `
+  -ContentType "application/json" `
+  -Body $status
+```
+
 Tạo post:
 
 ```powershell
@@ -196,7 +214,7 @@ Chạy test riêng một module:
 mvn -pl feed-service test
 ```
 
-Các test hiện có bao phủ Flyway migration/seed user trên H2, context, Cassandra mapping/logged batch, async executor, async MVC response và mapping `BusinessException`. `search-service` và `notification-service` hiện chưa có test tự động.
+Các test hiện có bao phủ Flyway migration/seed và create/update user trên H2, User API validation/error contract, Feed-to-User status contract, Cassandra mapping/logged batch, async executor, async MVC response và mapping `BusinessException`. `search-service` và `notification-service` hiện chưa có test tự động.
 
 ## Cấu trúc repository
 

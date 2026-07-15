@@ -15,7 +15,7 @@ Use case trung tâm là tạo post. Tác giả phải tồn tại và có trạn
 
 ### `user-service`
 
-Sở hữu thông tin trạng thái user trong PostgreSQL và chỉ cung cấp endpoint nội bộ `GET /internal/users/{userId}/status`. Spring Data JPA cung cấp repository; Flyway quản lý schema và seed data.
+Sở hữu thông tin trạng thái user trong PostgreSQL, cung cấp `POST /api/users`, `PUT /api/users/{userId}` và endpoint nội bộ `GET /internal/users/{userId}/status`. Spring Data JPA cung cấp repository; Flyway quản lý schema và seed data.
 
 Dữ liệu demo được tạo bởi migration `V1__create_users.sql`:
 
@@ -23,7 +23,7 @@ Dữ liệu demo được tạo bởi migration `V1__create_users.sql`:
 - `u002`: `ACTIVE`
 - `u003`: `INACTIVE`
 
-Service chưa có API tạo/cập nhật user; muốn thay đổi dữ liệu cần migration mới hoặc thao tác trực tiếp trong môi trường local.
+Theo lựa chọn compact của demo, `UserInternalController` chứa cả hai public write endpoint và internal status lookup. `UserService` tách business rule create/update khỏi HTTP adapter; update chỉ thay đổi status và trả `404` nếu user chưa tồn tại.
 
 ### `feed-service`
 

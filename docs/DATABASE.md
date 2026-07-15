@@ -63,6 +63,8 @@ Flyway chạy trước khi JPA EntityManager sẵn sàng. Hibernate dùng `ddl-a
 - Hibernate không tự tạo hoặc tự cập nhật table.
 - Mapping/schema sai làm User Service fail startup.
 
+`POST /api/users` và `PUT /api/users/{userId}` ghi vào chính bảng `users` hiện có. Hai endpoint chỉ dùng hai cột `user_id` và `status`, nên không cần migration mới; constraint primary key và status check tiếp tục là lớp bảo vệ cuối cùng ở database.
+
 ### Quy tắc migration
 
 - Không sửa migration đã chạy ở môi trường được chia sẻ.
