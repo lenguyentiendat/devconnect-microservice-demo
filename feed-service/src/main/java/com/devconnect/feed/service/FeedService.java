@@ -1,6 +1,7 @@
 package com.devconnect.feed.service;
 
 import com.devconnect.feed.dto.ApiResponse;
+import com.devconnect.feed.dto.ContentValidationResponse;
 import com.devconnect.feed.dto.CreatePostRequest;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.dto.UserStatusResponse;
@@ -9,6 +10,8 @@ import com.devconnect.feed.exception.DownstreamServiceException;
 import com.devconnect.feed.event.PostCreatedEvent;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.persistence.PostStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatusCode;
@@ -19,6 +22,7 @@ import org.springframework.web.client.RestClientException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -29,6 +33,8 @@ import static java.time.temporal.ChronoUnit.MILLIS;
 
 @Service
 public class FeedService {
+
+    private static final Logger log = LoggerFactory.getLogger(FeedService.class);
 
     private final RestClient userServiceRestClient;
     private final PostEventPublisher postEventPublisher;
@@ -48,24 +54,70 @@ public class FeedService {
     }
 
     public PostResponse createPost(CreatePostRequest request) {
+        CompletableFuture<UserStatusResponse> authorStatusFuture =
+                CompletableFuture.supplyAsync(
+                        () -> 1getAuthorStatus(request.authorId()),
+                        postTaskExecutor
+                );
+        CompletableFuture<ContentValidationResponse> contentValidationFuture =
+                CompletableFuture.supplyAsync(
+                        () -> validatePostContent(request.content()),
+                        postTaskExecutor
+                );
+
         try {
-            return CompletableFuture
-                    .supplyAsync(() -> createPostSynchronously(request), postTaskExecutor)
+            PostCreationValidation validation = authorStatusFuture
+                    .thenCombine(
+                            contentValidationFuture,
+                            PostCreationValidation::new
+                    )
                     .join();
+            validatePostCreation(validation);
+            return createAndSavePost(request);
         } catch (CompletionException exception) {
-            if (exception.getCause() instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            throw new IllegalStateException("Post creation failed", exception.getCause());
+            throw unwrapCompletionException(exception);
         }
     }
 
-    private PostResponse createPostSynchronously(CreatePostRequest request) {
-        UserStatusResponse authorStatus = getAuthorStatus(request.authorId());
-        if (!"ACTIVE".equals(authorStatus.status())) {
+    private ContentValidationResponse validatePostContent(String content) {
+        log.info("Validating content on thread: {}", Thread.currentThread().getName());
+
+        if (content == null || content.isBlank()) {
+            return new ContentValidationResponse(false, "Post content must not be blank");
+        }
+
+        if (content.length() > 5_000) {
+            return new ContentValidationResponse(
+                    false,
+                    "Post content must not exceed 5000 characters"
+            );
+        }
+
+        String normalizedContent = content.toLowerCase(Locale.ROOT);
+        boolean containsProhibitedWord = List.of("spam", "scam").stream()
+                .anyMatch(normalizedContent::contains);
+
+        if (containsProhibitedWord) {
+            return new ContentValidationResponse(
+                    false,
+                    "Post content contains prohibited words"
+            );
+        }
+
+        return new ContentValidationResponse(true, null);
+    }
+
+    private void validatePostCreation(PostCreationValidation validation) {
+        if (!"ACTIVE".equals(validation.authorStatus().status())) {
             throw new BusinessException("Author is not active");
         }
 
+        if (!validation.contentValidation().allowed()) {
+            throw new BusinessException(validation.contentValidation().reason());
+        }
+    }
+
+    private PostResponse createAndSavePost(CreatePostRequest request) {
         LocalDateTime createdAt = LocalDateTime.ofInstant(
                 Instant.now().truncatedTo(MILLIS),
                 UTC
@@ -92,6 +144,16 @@ public class FeedService {
         return post;
     }
 
+    private RuntimeException unwrapCompletionException(CompletionException exception) {
+        Throwable cause = exception.getCause();
+
+        if (cause instanceof RuntimeException runtimeException) {
+            return runtimeException;
+        }
+
+        return new IllegalStateException("Post creation failed", cause);
+    }
+
     public PostResponse getPostById(String postId) {
         return postStore.findById(postId)
                 .orElseThrow(() -> new BusinessException("Post not found"));
@@ -102,6 +164,8 @@ public class FeedService {
     }
 
     private UserStatusResponse getAuthorStatus(String authorId) {
+        log.info("Getting author status on thread: {}", Thread.currentThread().getName());
+
         try {
             ApiResponse<UserStatusResponse> response = userServiceRestClient
                     .get()
@@ -128,5 +192,11 @@ public class FeedService {
         } catch (RestClientException ex) {
             throw new DownstreamServiceException("Failed to call User Service", ex);
         }
+    }
+
+    private record PostCreationValidation(
+            UserStatusResponse authorStatus,
+            ContentValidationResponse contentValidation
+    ) {
     }
 }

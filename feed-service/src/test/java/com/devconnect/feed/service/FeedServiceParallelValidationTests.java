@@ -13,23 +13,26 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-class FeedServiceAsyncTests {
+class FeedServiceParallelValidationTests {
 
     private MockRestServiceServer server;
+    private RestClient userServiceRestClient;
     private PostEventPublisher publisher;
     private PostStore postStore;
     private FeedService feedService;
@@ -39,16 +42,17 @@ class FeedServiceAsyncTests {
     void setUp() {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
+        userServiceRestClient = builder.baseUrl("http://user-service").build();
         publisher = mock(PostEventPublisher.class);
         postStore = mock(PostStore.class);
         executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(1);
-        executor.setMaxPoolSize(1);
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(2);
         executor.setQueueCapacity(10);
         executor.setThreadNamePrefix("post-async-test-");
         executor.initialize();
         feedService = new FeedService(
-                builder.baseUrl("http://user-service").build(),
+                userServiceRestClient,
                 publisher,
                 postStore,
                 executor
@@ -61,44 +65,73 @@ class FeedServiceAsyncTests {
     }
 
     @Test
-    void createPostRunsWorkflowOnPostExecutor() {
+    void createPostSubmitsBothValidationsBeforeWaiting() {
         server.expect(requestTo("http://user-service/internal/users/u001/status"))
                 .andRespond(withSuccess("""
                         {"success":true,"message":"User status found","data":{"userId":"u001","status":"ACTIVE"}}
                         """, MediaType.APPLICATION_JSON));
-        String callerThread = Thread.currentThread().getName();
-        AtomicReference<String> workerThread = new AtomicReference<>();
-        doAnswer(invocation -> {
-            workerThread.set(Thread.currentThread().getName());
-            return null;
-        }).when(postStore).save(any());
-
-        PostResponse actual = feedService.createPost(
-                new CreatePostRequest("u001", "Async Java")
+        CoordinatingExecutor coordinatingExecutor = new CoordinatingExecutor();
+        feedService = new FeedService(
+                userServiceRestClient,
+                publisher,
+                postStore,
+                coordinatingExecutor
         );
 
-        assertEquals("u001", actual.authorId());
-        assertNotEquals(callerThread, workerThread.get());
-        assertTrue(workerThread.get().startsWith("post-async-test-"));
+        PostResponse post = feedService.createPost(
+                new CreatePostRequest("u001", "Hello DevConnect")
+        );
+
+        assertEquals(2, coordinatingExecutor.submittedTasks.get());
+        assertTrue(coordinatingExecutor.startedConcurrently.get());
+        assertEquals("u001", post.authorId());
+        verify(postStore).save(post);
         verify(publisher).publishPostCreated(any());
         server.verify();
     }
 
     @Test
-    void createPostRethrowsBusinessExceptionWithoutCompletionWrapper() {
-        server.expect(requestTo("http://user-service/internal/users/u003/status"))
+    void createPostRejectsProhibitedContentBeforeSaving() {
+        server.expect(requestTo("http://user-service/internal/users/u001/status"))
                 .andRespond(withSuccess("""
-                        {"success":true,"message":"User status found","data":{"userId":"u003","status":"INACTIVE"}}
+                        {"success":true,"message":"User status found","data":{"userId":"u001","status":"ACTIVE"}}
                         """, MediaType.APPLICATION_JSON));
 
         BusinessException exception = assertThrows(
                 BusinessException.class,
-                () -> feedService.createPost(new CreatePostRequest("u003", "Not allowed"))
+                () -> feedService.createPost(
+                        new CreatePostRequest("u001", "This is a SCAM")
+                )
         );
 
-        assertEquals("Author is not active", exception.getMessage());
+        assertEquals("Post content contains prohibited words", exception.getMessage());
         verify(postStore, never()).save(any());
         verify(publisher, never()).publishPostCreated(any());
         server.verify();
+    }
+
+    private static final class CoordinatingExecutor implements Executor {
+
+        private final AtomicInteger submittedTasks = new AtomicInteger();
+        private final CountDownLatch validationTasksStarted = new CountDownLatch(2);
+        private final AtomicBoolean startedConcurrently = new AtomicBoolean();
+
+        @Override
+        public void execute(Runnable command) {
+            int taskNumber = submittedTasks.incrementAndGet();
+            Thread thread = new Thread(() -> {
+                validationTasksStarted.countDown();
+                try {
+                    if (validationTasksStarted.await(2, TimeUnit.SECONDS)) {
+                        startedConcurrently.set(true);
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(exception);
+                }
+                command.run();
+            }, "parallel-validation-" + taskNumber);
+            thread.start();
+        }
     }
 }
