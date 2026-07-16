@@ -1,23 +1,18 @@
 package com.devconnect.feed.service;
 
-import com.devconnect.feed.dto.ApiResponse;
+import com.devconnect.feed.client.UserServiceAdapter;
 import com.devconnect.feed.dto.ContentValidationResponse;
 import com.devconnect.feed.dto.CreatePostRequest;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.exception.BusinessException;
-import com.devconnect.feed.exception.DownstreamServiceException;
 import com.devconnect.feed.event.PostCreatedEvent;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.persistence.PostStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -36,18 +31,18 @@ public class FeedService {
 
     private static final Logger log = LoggerFactory.getLogger(FeedService.class);
 
-    private final RestClient userServiceRestClient;
+    private final UserServiceAdapter userServiceAdapter;
     private final PostEventPublisher postEventPublisher;
     private final PostStore postStore;
     private final Executor postTaskExecutor;
 
     public FeedService(
-            RestClient userServiceRestClient,
+            UserServiceAdapter userServiceAdapter,
             PostEventPublisher postEventPublisher,
             PostStore postStore,
             @Qualifier("postTaskExecutor") Executor postTaskExecutor
     ) {
-        this.userServiceRestClient = userServiceRestClient;
+        this.userServiceAdapter = userServiceAdapter;
         this.postEventPublisher = postEventPublisher;
         this.postStore = postStore;
         this.postTaskExecutor = postTaskExecutor;
@@ -165,33 +160,7 @@ public class FeedService {
 
     private UserStatusResponse getAuthorStatus(String authorId) {
         log.info("Getting author status on thread: {}", Thread.currentThread().getName());
-
-        try {
-            ApiResponse<UserStatusResponse> response = userServiceRestClient
-                    .get()
-                    .uri("/internal/users/{userId}/status", authorId)
-                    .retrieve()
-                    .onStatus(HttpStatusCode::is4xxClientError, (request, responseBody) -> {
-                        throw new BusinessException("Author not found");
-                    })
-                    .onStatus(HttpStatusCode::is5xxServerError, (request, responseBody) -> {
-                        throw new DownstreamServiceException("User Service returned server error");
-                    })
-                    .body(new ParameterizedTypeReference<ApiResponse<UserStatusResponse>>() {});
-
-            if (response == null || !response.isSuccess() || response.getData() == null) {
-                throw new BusinessException("Author not found");
-            }
-
-            return response.getData();
-
-        } catch (BusinessException ex) {
-            throw ex;
-        } catch (DownstreamServiceException ex) {
-            throw ex;
-        } catch (RestClientException ex) {
-            throw new DownstreamServiceException("Failed to call User Service", ex);
-        }
+        return userServiceAdapter.getUserStatus(authorId);
     }
 
     private record PostCreationValidation(

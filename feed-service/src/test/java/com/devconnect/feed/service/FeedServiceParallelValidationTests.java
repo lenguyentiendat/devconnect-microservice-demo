@@ -1,17 +1,16 @@
 package com.devconnect.feed.service;
 
+import com.devconnect.feed.client.UserServiceAdapter;
 import com.devconnect.feed.dto.CreatePostRequest;
 import com.devconnect.feed.dto.PostResponse;
+import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.persistence.PostStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.MediaType;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-import org.springframework.test.web.client.MockRestServiceServer;
-import org.springframework.web.client.RestClient;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -26,13 +25,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
-import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.mockito.Mockito.when;
 
 class FeedServiceParallelValidationTests {
 
-    private MockRestServiceServer server;
-    private RestClient userServiceRestClient;
+    private UserServiceAdapter userServiceAdapter;
     private PostEventPublisher publisher;
     private PostStore postStore;
     private FeedService feedService;
@@ -40,9 +37,7 @@ class FeedServiceParallelValidationTests {
 
     @BeforeEach
     void setUp() {
-        RestClient.Builder builder = RestClient.builder();
-        server = MockRestServiceServer.bindTo(builder).build();
-        userServiceRestClient = builder.baseUrl("http://user-service").build();
+        userServiceAdapter = mock(UserServiceAdapter.class);
         publisher = mock(PostEventPublisher.class);
         postStore = mock(PostStore.class);
         executor = new ThreadPoolTaskExecutor();
@@ -52,7 +47,7 @@ class FeedServiceParallelValidationTests {
         executor.setThreadNamePrefix("post-async-test-");
         executor.initialize();
         feedService = new FeedService(
-                userServiceRestClient,
+                userServiceAdapter,
                 publisher,
                 postStore,
                 executor
@@ -66,13 +61,11 @@ class FeedServiceParallelValidationTests {
 
     @Test
     void createPostSubmitsBothValidationsBeforeWaiting() {
-        server.expect(requestTo("http://user-service/internal/users/u001/status"))
-                .andRespond(withSuccess("""
-                        {"success":true,"message":"User status found","data":{"userId":"u001","status":"ACTIVE"}}
-                        """, MediaType.APPLICATION_JSON));
+        when(userServiceAdapter.getUserStatus("u001"))
+                .thenReturn(new UserStatusResponse("u001", "ACTIVE"));
         CoordinatingExecutor coordinatingExecutor = new CoordinatingExecutor();
         feedService = new FeedService(
-                userServiceRestClient,
+                userServiceAdapter,
                 publisher,
                 postStore,
                 coordinatingExecutor
@@ -87,15 +80,13 @@ class FeedServiceParallelValidationTests {
         assertEquals("u001", post.authorId());
         verify(postStore).save(post);
         verify(publisher).publishPostCreated(any());
-        server.verify();
+        verify(userServiceAdapter).getUserStatus("u001");
     }
 
     @Test
     void createPostRejectsProhibitedContentBeforeSaving() {
-        server.expect(requestTo("http://user-service/internal/users/u001/status"))
-                .andRespond(withSuccess("""
-                        {"success":true,"message":"User status found","data":{"userId":"u001","status":"ACTIVE"}}
-                        """, MediaType.APPLICATION_JSON));
+        when(userServiceAdapter.getUserStatus("u001"))
+                .thenReturn(new UserStatusResponse("u001", "ACTIVE"));
 
         BusinessException exception = assertThrows(
                 BusinessException.class,
@@ -107,7 +98,7 @@ class FeedServiceParallelValidationTests {
         assertEquals("Post content contains prohibited words", exception.getMessage());
         verify(postStore, never()).save(any());
         verify(publisher, never()).publishPostCreated(any());
-        server.verify();
+        verify(userServiceAdapter).getUserStatus("u001");
     }
 
     private static final class CoordinatingExecutor implements Executor {
