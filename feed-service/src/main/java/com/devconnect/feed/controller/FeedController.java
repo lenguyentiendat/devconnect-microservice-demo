@@ -5,6 +5,8 @@ import com.devconnect.feed.dto.CreatePostRequest;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.service.FeedService;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -20,11 +22,11 @@ public class FeedController {
     }
 
     @PostMapping
-    public ApiResponse<PostResponse> createPost(
+    public ResponseEntity<PostResponse> createPost(
             @Valid @RequestBody CreatePostRequest request
     ) {
         PostResponse response = feedService.createPost(request);
-        return ApiResponse.success("Post created successfully", response);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     @GetMapping

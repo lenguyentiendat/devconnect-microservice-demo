@@ -45,10 +45,11 @@ class FeedControllerTests {
                                 }
                                 """))
                 .andExpect(request().asyncNotStarted())
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.message").value("Post created successfully"))
-                .andExpect(jsonPath("$.data.postId").value("post-1"));
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.postId").value("post-1"))
+                .andExpect(jsonPath("$.authorId").value("u001"))
+                .andExpect(jsonPath("$.content").value("Async Java"))
+                .andExpect(jsonPath("$.success").doesNotExist());
 
         verify(feedService).createPost(any(CreatePostRequest.class));
     }
