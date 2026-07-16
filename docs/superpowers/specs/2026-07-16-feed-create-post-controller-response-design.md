@@ -1,67 +1,76 @@
-# Asynchronous Feed Create Post Response Design
+# Parallel Post Validation Design
 
 ## Goal
 
-Keep the create-post HTTP response body as `ApiResponse<PostResponse>` while making
-the Spring MVC request genuinely asynchronous. The controller must not return a
-`CompletableFuture`, and `AsyncPostService` remains removed.
+Keep the HTTP API synchronous and return `ResponseEntity<PostResponse>` while
+reducing validation latency by running author-status lookup and content validation
+in parallel inside `FeedService.createPost`.
 
 ## Architecture
 
-`FeedService.createPost` returns `CompletableFuture<PostResponse>` created with
-`CompletableFuture.supplyAsync(..., postTaskExecutor)`. It does not call `join()` or
-otherwise wait for the workflow. The existing author validation, post persistence,
-and event publication remain in a private synchronous worker method.
+`FeedController.createPost` calls `FeedService.createPost`, then returns the concrete
+post with HTTP `201 Created`. Neither the controller signature nor its HTTP response
+exposes `CompletableFuture`.
 
-`FeedController.createPost` returns
-`DeferredResult<ApiResponse<PostResponse>>`. It registers a completion callback on
-the service future and immediately returns the `DeferredResult`, allowing Spring MVC
-to release the servlet request thread. When the future succeeds, the controller
-sets the existing success envelope and message on the deferred result. Spring then
-performs async dispatch and serializes the contained `ApiResponse<PostResponse>` as
-the same JSON shape clients already receive.
+`FeedService.createPost` creates two executor-backed futures before waiting:
 
-This design improves request-thread utilization and service throughput under
-concurrency. It does not make the User Service call or Cassandra write complete
-faster, so the client still receives the final response only after those operations
-finish.
+- `authorStatusFuture` calls the existing User Service status endpoint.
+- `contentValidationFuture` performs local content validation.
+
+The futures use the existing bounded `postTaskExecutor`, whose default core pool
+size is four. `thenCombine` creates a `PostCreationValidation` only after both tasks
+complete successfully. The request thread waits once on the combined future. This
+keeps the HTTP request synchronous while allowing both independent validations to
+overlap. With a future external moderation call, validation time approaches the
+slower call rather than the sum of both calls. The initial local content validation
+is fast, so its immediate latency improvement is expected to be small.
+
+After combination, `validatePostCreation` rejects inactive authors or disallowed
+content. Only valid requests reach `createAndSavePost`, which preserves the existing
+Cassandra save and `POST_CREATED` event publication behavior.
+
+## Content Validation
+
+Add `ContentValidationResponse(boolean allowed, String reason)` in the feed DTO
+package. The local validator rejects:
+
+- null or blank content with `Post content must not be blank`;
+- content longer than 5,000 characters with
+  `Post content must not exceed 5000 characters`;
+- case-insensitive occurrences of `spam` or `scam` with
+  `Post content contains prohibited words`.
+
+All other content returns an allowed response. `CreatePostRequest` validation still
+rejects blank HTTP input before the controller executes; the service rule also
+protects direct service callers.
 
 ## Error Handling
 
-The controller unwraps `CompletionException` when necessary and passes the original
-cause to `DeferredResult.setErrorResult`. Spring's async dispatch then routes
-`BusinessException`, `DownstreamServiceException`, and unexpected failures through
-the existing `GlobalExceptionHandler`, preserving current HTTP status and error
-envelopes.
+Failures raised by either future are surfaced by `thenCombine().join()` as
+`CompletionException`. `FeedService` unwraps runtime causes so the existing
+`GlobalExceptionHandler` retains current business and downstream error behavior.
+Non-runtime causes become `IllegalStateException("Post creation failed", cause)`.
 
-Spring MVC's configured async request timeout remains in effect. This change does
-not introduce cancellation of the blocking worker because interruption could leave
-author validation, Cassandra persistence, and event publication in an ambiguous
-partially completed state.
+## Observability
 
-## Components
-
-- `FeedController` owns HTTP async adaptation and success-envelope creation.
-- `FeedService` owns executor submission and the create-post business workflow.
-- `AsyncConfig` continues to provide the bounded `postTaskExecutor`.
-- `AsyncPostService` is not restored.
+`FeedService` logs the current thread name when author lookup and content validation
+start. Under normal executor capacity, logs show the two validations on separate
+`post-async-*` worker threads. The existing executor name and sizing configuration
+remain unchanged.
 
 ## Testing
 
-- Controller MVC success coverage verifies `asyncStarted()`, performs
-  `asyncDispatch`, and checks the unchanged success JSON.
-- Controller MVC failure coverage completes the service future exceptionally,
-  performs `asyncDispatch`, and verifies the existing business-error response.
-- Service coverage uses a controlled worker to prove `createPost` returns an
-  incomplete future without waiting and that the workflow runs on the post executor.
-- Service failure coverage verifies business failures complete the future
-  exceptionally.
-- The complete feed-service test suite provides regression and Spring wiring
-  coverage.
+- Controller MVC coverage verifies HTTP `201`, a raw `PostResponse` body, validation
+  errors, and direct delegation to `FeedService`.
+- Service concurrency coverage uses a controlled executor to prove both validation
+  tasks are submitted before either is awaited.
+- Service coverage verifies allowed content creates a post, prohibited content is
+  rejected without persistence or publication, inactive authors remain rejected,
+  and asynchronous failures are unwrapped.
+- The full feed-service suite verifies Spring wiring and regressions.
 
 ## Scope
 
-The endpoint path, request schema, final response JSON, success message, author
-validation, Cassandra persistence, event publication, and executor configuration
-remain unchanged. HTTP `202 Accepted`, polling, new response DTOs, and fire-and-forget
-post creation are outside this change.
+The endpoint remains `/api/feed/posts`. `AsyncPostService` remains removed. This
+change does not add a Content Moderation Service, change Cassandra persistence,
+change event payloads, or make the HTTP request asynchronous.
