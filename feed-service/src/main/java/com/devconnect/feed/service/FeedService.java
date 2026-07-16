@@ -56,7 +56,7 @@ public class FeedService {
     public PostResponse createPost(CreatePostRequest request) {
         CompletableFuture<UserStatusResponse> authorStatusFuture =
                 CompletableFuture.supplyAsync(
-                        () -> 1getAuthorStatus(request.authorId()),
+                        () -> getAuthorStatus(request.authorId()),
                         postTaskExecutor
                 );
         CompletableFuture<ContentValidationResponse> contentValidationFuture =
