@@ -1,48 +1,67 @@
-# Feed Create Post Controller Response Design
+# Asynchronous Feed Create Post Response Design
 
 ## Goal
 
-Change the create-post HTTP endpoint so the controller returns
-`ApiResponse<PostResponse>` instead of `CompletableFuture<ApiResponse<PostResponse>>`.
-Remove `AsyncPostService` and keep asynchronous task execution inside
-`FeedService.createPost`.
+Keep the create-post HTTP response body as `ApiResponse<PostResponse>` while making
+the Spring MVC request genuinely asynchronous. The controller must not return a
+`CompletableFuture`, and `AsyncPostService` remains removed.
 
-## Design
+## Architecture
 
-`FeedController` depends only on `FeedService`. Its `createPost` method calls
-`FeedService.createPost` and wraps the returned post in the existing success
-response with the message `Post created successfully`.
+`FeedService.createPost` returns `CompletableFuture<PostResponse>` created with
+`CompletableFuture.supplyAsync(..., postTaskExecutor)`. It does not call `join()` or
+otherwise wait for the workflow. The existing author validation, post persistence,
+and event publication remain in a private synchronous worker method.
 
-`FeedService` receives the existing `postTaskExecutor`. Its public `createPost`
-method submits the existing create-post workflow with `CompletableFuture.supplyAsync`
-and waits with `join()` so the method can return a concrete `PostResponse`.
-The existing workflow moves to a private synchronous method. This preserves the
-required API contract while ensuring the workflow runs on the configured post
-executor. The HTTP request still waits for author validation and Cassandra storage;
-the change moves work off the request thread but does not reduce response latency.
+`FeedController.createPost` returns
+`DeferredResult<ApiResponse<PostResponse>>`. It registers a completion callback on
+the service future and immediately returns the `DeferredResult`, allowing Spring MVC
+to release the servlet request thread. When the future succeeds, the controller
+sets the existing success envelope and message on the deferred result. Spring then
+performs async dispatch and serializes the contained `ApiResponse<PostResponse>` as
+the same JSON shape clients already receive.
 
-`AsyncPostService` and its dedicated tests are removed. `AsyncConfig` remains
-because `FeedService` still uses `postTaskExecutor`.
+This design improves request-thread utilization and service throughput under
+concurrency. It does not make the User Service call or Cassandra write complete
+faster, so the client still receives the final response only after those operations
+finish.
 
 ## Error Handling
 
-`CompletableFuture.join()` wraps task failures in `CompletionException`.
-`FeedService.createPost` unwraps and rethrows runtime causes such as
-`BusinessException` and `DownstreamServiceException`, allowing the existing global
-exception handlers to preserve their current HTTP status and response body.
-Unexpected non-runtime causes are rethrown as an `IllegalStateException`.
+The controller unwraps `CompletionException` when necessary and passes the original
+cause to `DeferredResult.setErrorResult`. Spring's async dispatch then routes
+`BusinessException`, `DownstreamServiceException`, and unexpected failures through
+the existing `GlobalExceptionHandler`, preserving current HTTP status and error
+envelopes.
+
+Spring MVC's configured async request timeout remains in effect. This change does
+not introduce cancellation of the blocking worker because interruption could leave
+author validation, Cassandra persistence, and event publication in an ambiguous
+partially completed state.
+
+## Components
+
+- `FeedController` owns HTTP async adaptation and success-envelope creation.
+- `FeedService` owns executor submission and the create-post business workflow.
+- `AsyncConfig` continues to provide the bounded `postTaskExecutor`.
+- `AsyncPostService` is not restored.
 
 ## Testing
 
-- A controller MVC test verifies that POST is handled synchronously, returns the
-  existing success envelope, and delegates to `FeedService`.
-- A controller MVC test verifies that a `BusinessException` still reaches the
-  existing handler without async dispatch.
-- Service tests verify that the create workflow runs on `postTaskExecutor` and that
-  business exceptions are rethrown without a `CompletionException` wrapper.
-- Existing feed-service tests run as regression coverage.
+- Controller MVC success coverage verifies `asyncStarted()`, performs
+  `asyncDispatch`, and checks the unchanged success JSON.
+- Controller MVC failure coverage completes the service future exceptionally,
+  performs `asyncDispatch`, and verifies the existing business-error response.
+- Service coverage uses a controlled worker to prove `createPost` returns an
+  incomplete future without waiting and that the workflow runs on the post executor.
+- Service failure coverage verifies business failures complete the future
+  exceptionally.
+- The complete feed-service test suite provides regression and Spring wiring
+  coverage.
 
 ## Scope
 
-This change does not alter the endpoint path, request schema, success message,
-post persistence semantics, event publication behavior, or executor configuration.
+The endpoint path, request schema, final response JSON, success message, author
+validation, Cassandra persistence, event publication, and executor configuration
+remain unchanged. HTTP `202 Accepted`, polling, new response DTOs, and fire-and-forget
+post creation are outside this change.
