@@ -9,6 +9,7 @@ import com.devconnect.feed.exception.DownstreamServiceException;
 import com.devconnect.feed.event.PostCreatedEvent;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.persistence.PostStore;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,9 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 
 import static java.time.ZoneOffset.UTC;
 import static java.time.temporal.ChronoUnit.MILLIS;
@@ -29,20 +33,35 @@ public class FeedService {
     private final RestClient userServiceRestClient;
     private final PostEventPublisher postEventPublisher;
     private final PostStore postStore;
+    private final Executor postTaskExecutor;
 
     public FeedService(
             RestClient userServiceRestClient,
             PostEventPublisher postEventPublisher,
-            PostStore postStore
+            PostStore postStore,
+            @Qualifier("postTaskExecutor") Executor postTaskExecutor
     ) {
         this.userServiceRestClient = userServiceRestClient;
         this.postEventPublisher = postEventPublisher;
         this.postStore = postStore;
+        this.postTaskExecutor = postTaskExecutor;
     }
 
     public PostResponse createPost(CreatePostRequest request) {
-        UserStatusResponse authorStatus = getAuthorStatus(request.authorId());
+        try {
+            return CompletableFuture
+                    .supplyAsync(() -> createPostSynchronously(request), postTaskExecutor)
+                    .join();
+        } catch (CompletionException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException("Post creation failed", exception.getCause());
+        }
+    }
 
+    private PostResponse createPostSynchronously(CreatePostRequest request) {
+        UserStatusResponse authorStatus = getAuthorStatus(request.authorId());
         if (!"ACTIVE".equals(authorStatus.status())) {
             throw new BusinessException("Author is not active");
         }
