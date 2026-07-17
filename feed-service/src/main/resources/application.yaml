@@ -1,6 +1,13 @@
 server:
   port: ${FEED_SERVICE_PORT:8082}
 
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: false
+
 spring:
   application:
     name: feed-service
@@ -31,6 +38,11 @@ spring:
         enable.idempotence: true
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+# Backward-compatible alias for older deployments that inject this property directly.
+services:
+  user-service:
+    base-url: ${USER_SERVICE_BASE_URL:http://localhost:8081}
 
 app:
   async:

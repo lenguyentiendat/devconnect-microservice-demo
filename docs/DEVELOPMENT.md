@@ -18,7 +18,7 @@ mvn -version
 docker compose version
 ```
 
-Parent POM quản lý bốn module và đặt `java.version=21`. Spring Boot parent hiện ở version 4.1.0.
+Parent POM quản lý bốn module, đặt `java.version=21` và import Spring Cloud BOM `2025.1.2`. Spring Boot parent hiện ở version 4.1.0; `feed-service` dùng `spring-cloud-starter-openfeign` cho internal HTTP call tới User Service.
 
 ## 2. Maven workflow
 
@@ -168,7 +168,7 @@ Tất cả cấu hình runtime hiện dùng profile mặc định.
 | `CASSANDRA_LOCAL_DATACENTER` | Feed | `datacenter1` | Local datacenter của driver. |
 | `CASSANDRA_KEYSPACE` | Feed | `devconnect_feed` | Keyspace chứa post tables. |
 | `CASSANDRA_REQUEST_TIMEOUT` | Feed | `5s` | Timeout cho CQL request. |
-| `USER_SERVICE_BASE_URL` | Feed | `http://localhost:8081` | Base URL gọi User Service. |
+| `USER_SERVICE_BASE_URL` | Feed | `http://localhost:8081` | URL của OpenFeign named client `user-service`. |
 | `KAFKA_BOOTSTRAP_SERVERS` | Feed/Search/Notification | `localhost:9092` | Danh sách Kafka bootstrap server. |
 | `POST_ASYNC_CORE_POOL_SIZE` | Feed | `4` | Core worker cho create-post. |
 | `POST_ASYNC_MAX_POOL_SIZE` | Feed | `16` | Worker tối đa. |
@@ -196,6 +196,8 @@ mvn -pl feed-service spring-boot:run
 
 Nếu đổi User Service port, phải đổi đồng thời `USER_SERVICE_BASE_URL` của Feed Service. Nếu application chạy trong container cùng compose network, dùng hostname `postgres:5432`, `cassandra:9042` và Kafka `kafka:29092` thay cho `localhost`.
 
+OpenFeign client `user-service` hiện cấu hình `connectTimeout=5000` và `readTimeout=5000` millisecond trong `feed-service/src/main/resources/application.yaml`. Hai timeout này chưa expose thành environment variable; project cũng chưa bật retry, circuit breaker hoặc service discovery.
+
 Tên topic `post-events` và consumer group hiện chưa expose bằng environment variable.
 
 Compose override các giá trị host mặc định bằng DNS name nội bộ:
@@ -215,23 +217,30 @@ Không đổi các giá trị này thành `localhost` bên trong container.
 |---|---|---|
 | `UserServiceApplicationTests` | User | Spring context load. |
 | `UserServiceApplicationTests.flywaySeedsDemoUsers` | User | Flyway schema/seed và JPA query trên H2 PostgreSQL mode. |
-| `FeedServiceApplicationTests` | Feed | Spring context load. |
+| `FeedServiceApplicationTests` | Feed | Spring context load và đăng ký `UserServiceClient` Feign proxy. |
 | `CassandraPostStoreTests` | Feed | Logged batch, UUID lookup, timestamp mapping và feed ordering. |
-| `AsyncPostServiceTests` | Feed | Chạy đúng executor, future result và business exception. |
-| `FeedControllerAsyncTests` | Feed | Async MVC dispatch, success body và HTTP 400 mapping. |
+| `UserServiceAdapterTests` | Feed | Validate response envelope và map Feign 404/downstream error. |
+| `FeedServiceParallelValidationTests` | Feed | Hai validation chạy đồng thời, chỉ lưu post khi cả hai hợp lệ. |
+| `FeedServiceUserContractTests` | Feed | Author `ACTIVE` được chấp nhận; author thiếu/inactive bị từ chối. |
+| `FeedControllerTests` | Feed | Controller đồng bộ trả raw `PostResponse`/HTTP 201 và giữ error mapping. |
+| `PostCreatedEventListenerTests` | Search | Initial partition replay đúng một lần và routing `POST_CREATED`. |
+| `PostSearchServiceTests` | Search | Case-insensitive search và upsert theo `postId`. |
+| `PostCreatedEventListenerTests` | Notification | Initial partition replay đúng một lần và routing `POST_CREATED`. |
+| `NotificationServiceTests` | Notification | Deduplicate theo `eventId` và filter theo user. |
 
-Test hiện tại không cần Docker: User Service dùng H2 ở PostgreSQL compatibility mode; Feed context mock `CqlSession`, còn persistence behavior dùng Mockito. Chưa có integration test với PostgreSQL/Cassandra/Kafka thật, REST call thực giữa Feed/User, producer callback, search consumer hoặc notification deduplication.
+Test hiện tại không cần Docker: User Service dùng H2 ở PostgreSQL compatibility mode; Feed context mock `CqlSession`, Feign adapter/service/persistence behavior và consumer behavior dùng Mockito. Chưa có integration test với PostgreSQL/Cassandra/Kafka thật, Feign HTTP call thực giữa Feed/User hoặc producer callback.
 
-Tại thời điểm tài liệu này được cập nhật, reactor có 11 test và tất cả đều pass bằng `mvn test`.
+Tại thời điểm tài liệu này được cập nhật, reactor có 50 test và tất cả đều pass từ clean build bằng `mvn clean test`.
 
 Các test nên bổ sung:
 
-- Unit test toàn bộ business branch trong `FeedService`.
+- Unit test các content-validation edge case còn lại trong `FeedService`.
 - MVC test cho mọi endpoint và validation edge case.
+- OpenFeign contract/integration test với User Service thật hoặc WireMock/MockWebServer.
 - PostgreSQL, Cassandra và Kafka integration test bằng Testcontainers.
 - Contract test cho `PostCreatedEvent`.
 - End-to-end test tạo post → search → notification với polling có timeout.
-- Load test cho async executor và hành vi `CallerRunsPolicy`.
+- Load test cho parallel validation executor và hành vi `CallerRunsPolicy`.
 
 ## 7. Smoke test thủ công
 
@@ -292,7 +301,8 @@ Dừng process xung đột hoặc override biến port tương ứng.
 - Xác nhận User Service đang chạy.
 - Nếu chạy bằng Compose, gọi trực tiếp `http://localhost:3000/internal/users/u001/status`.
 - Nếu chạy application trên host với cấu hình mặc định, gọi `http://localhost:8081/internal/users/u001/status`.
-- Kiểm tra `USER_SERVICE_BASE_URL`, nhất là khi đổi port hoặc chạy trong container.
+- Kiểm tra `USER_SERVICE_BASE_URL`, nhất là khi đổi port hoặc chạy trong container; đây là URL của OpenFeign named client `user-service`.
+- Mặc định Feign dừng chờ sau 5 giây cho connect/read timeout; timeout, lỗi decode và HTTP error khác 404 đều được map về cùng message 503 này.
 
 ### User Service không khởi động
 
@@ -319,11 +329,12 @@ Dừng process xung đột hoặc override biến port tương ứng.
 - Chờ eventual consistency và gọi lại API.
 - Kiểm tra log publish trong Feed Service.
 - Kiểm tra topic/message, consumer group và lag tại Kafka UI.
-- Nhớ rằng restart Search/Notification làm mất read model trong memory; consumer có thể tiếp tục từ offset đã commit nên dữ liệu cũ không tự xuất hiện lại.
+- Kiểm tra log replay `Rebuilding search index from the beginning of partitions [...]` và `Rebuilding notification read model from the beginning of partitions [...]`.
+- Search/Notification mất map cục bộ khi restart nhưng tự replay event còn retention ở lần Kafka assignment đầu tiên. Gọi lại API sau khi consumer catch up; nếu event đã hết retention thì dữ liệu không thể được dựng lại bằng cơ chế demo này.
 
 ### Dữ liệu biến mất
 
-PostgreSQL user và Cassandra post tồn tại qua application/container restart nhờ named volume. Search index, notification và notification deduplication vẫn mất khi restart service tương ứng.
+PostgreSQL user và Cassandra post tồn tại qua application/container restart nhờ named volume. Search index, notification và notification deduplication mất map cục bộ khi service tương ứng restart nhưng được dựng lại từ event Kafka còn retention.
 
 Muốn reset hoàn toàn database local:
 

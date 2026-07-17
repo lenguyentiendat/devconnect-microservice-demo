@@ -2,15 +2,17 @@
 
 > Tài liệu đầy đủ: [Mục lục documentation](docs/README.md)
 
+> Swagger/OpenAPI: [URL và hướng dẫn truy cập](docs/OPENAPI.md)
+
 DevConnect là project minh họa một luồng tạo bài viết theo kiến trúc microservice bằng Java 21, Spring Boot và Apache Kafka. Project kết hợp:
 
-- HTTP đồng bộ để `feed-service` xác minh trạng thái tác giả với `user-service`.
-- Async Servlet + `CompletableFuture` để tách blocking I/O khỏi HTTP request thread.
+- Spring Cloud OpenFeign để `feed-service` xác minh trạng thái tác giả với `user-service` qua HTTP đồng bộ.
+- `CompletableFuture.thenCombine()` để kiểm tra trạng thái tác giả và nội dung post song song trong `FeedService`.
 - Event-driven communication qua Kafka để cập nhật search index và tạo notification theo mô hình eventual consistency.
 
 Project dùng polyglot persistence: PostgreSQL lưu user, Cassandra lưu post; search index và notification vẫn là read model trong bộ nhớ. Đây vẫn là demo local, chưa có authentication, service discovery hay API gateway.
 
-Toàn bộ runtime gồm 9 Compose service: 4 application, 4 infrastructure service và 1 one-shot Cassandra initializer.
+Toàn bộ runtime gồm 10 Compose service: 4 application, 4 infrastructure service, 1 Swagger UI aggregate và 1 one-shot Cassandra initializer.
 
 ## Kiến trúc tổng quan
 
@@ -52,10 +54,10 @@ flowchart LR
 Luồng chính khi tạo post:
 
 1. Client gọi `POST /api/feed/posts`.
-2. `feed-service` chuyển tác vụ sang executor `postTaskExecutor`.
-3. `feed-service` gọi `user-service` để kiểm tra tác giả có trạng thái `ACTIVE`.
+2. `FeedService` submit hai tác vụ độc lập vào `postTaskExecutor`: gọi User Service bằng OpenFeign và kiểm tra nội dung post.
+3. `thenCombine()` đợi cả hai kết quả; post chỉ được tạo khi tác giả `ACTIVE` và nội dung hợp lệ.
 4. Post được ghi bằng logged batch vào hai Cassandra read model.
-5. `feed-service` gửi event `POST_CREATED` lên topic `post-events` và trả HTTP 200.
+5. `feed-service` gửi event `POST_CREATED` lên topic `post-events` và trả `201 Created` với `PostResponse`.
 6. `search-service` và `notification-service` xử lý cùng event bằng hai consumer group khác nhau.
 7. Search result và notification xuất hiện sau đó theo eventual consistency.
 
@@ -65,7 +67,7 @@ Xem phân tích chi tiết tại [Kiến trúc hệ thống](docs/ARCHITECTURE.m
 
 - Java 21
 - Spring Boot 4.1.0
-- Spring MVC và `RestClient`
+- Spring MVC và Spring Cloud OpenFeign
 - Spring Kafka / Apache Kafka 4.1.2
 - Spring Data JPA, Hibernate, Flyway và PostgreSQL 18.4
 - Spring Data Cassandra và Apache Cassandra 5.0.8
@@ -103,6 +105,7 @@ Lệnh này build cả bốn Spring Boot image, khởi động database/messagin
 - Cassandra: `localhost:9042`, keyspace `devconnect_feed`.
 - Kafka: `localhost:9092`.
 - Kafka UI: <http://localhost:8085>.
+- Swagger UI tổng hợp: <http://localhost:8090/>.
 - User API: `http://localhost:3000`.
 - Feed API: `http://localhost:8082`.
 - Search API: `http://localhost:8083`.
@@ -134,14 +137,21 @@ Project có sẵn ba user demo:
 Có thể tạo và cập nhật user qua User API:
 
 ```powershell
-$user = @{ userId = "u004"; status = "ACTIVE" } | ConvertTo-Json
+$user = @{
+  userId = "u004"
+  status = "ACTIVE"
+  email = "user@example.com"
+} | ConvertTo-Json
 Invoke-RestMethod `
   -Method Post `
   -Uri "http://localhost:3000/api/users" `
   -ContentType "application/json" `
   -Body $user
 
-$status = @{ status = "INACTIVE" } | ConvertTo-Json
+$status = @{
+  status = "INACTIVE"
+  email = "new-address@example.com"
+} | ConvertTo-Json
 Invoke-RestMethod `
   -Method Put `
   -Uri "http://localhost:3000/api/users/u004" `
@@ -214,7 +224,7 @@ Chạy test riêng một module:
 mvn -pl feed-service test
 ```
 
-Các test hiện có bao phủ Flyway migration/seed và create/update user trên H2, User API validation/error contract, Feed-to-User status contract, Cassandra mapping/logged batch, async executor, async MVC response và mapping `BusinessException`. `search-service` và `notification-service` hiện chưa có test tự động.
+Các test hiện có bao phủ Flyway migration/seed và create/update user trên H2, User API validation/error contract, OpenFeign adapter, Feed-to-User status contract, Cassandra mapping/logged batch, parallel validation, controller trả HTTP 201, Kafka initial replay của Search/Notification, search upsert và notification deduplication.
 
 ## Cấu trúc repository
 
@@ -251,10 +261,10 @@ Các test hiện có bao phủ Flyway migration/seed và create/update user trê
 
 ## Giới hạn hiện tại
 
-- Search index, notification và notification deduplication vẫn nằm trong `ConcurrentHashMap` và mất khi restart service.
+- Search index, notification và notification deduplication vẫn nằm trong `ConcurrentHashMap`; mỗi process rebuild từ các event còn được Kafka giữ lại, nên API có thể tạm thời trả dữ liệu thiếu trong lúc replay và không thể phục hồi event đã hết retention.
 - Cassandra feed hiện dùng một partition `feed_id=global`; phù hợp demo nhưng sẽ thành hot/unbounded partition ở quy mô lớn.
 - Publish Kafka là fire-and-observe: lỗi gửi event được ghi log nhưng không rollback post.
-- Chưa có timeout/retry/circuit breaker cho lời gọi từ Feed sang User Service.
+- OpenFeign đã có connect/read timeout 5 giây nhưng chưa có retry, circuit breaker hoặc service discovery.
 - Chưa có retry policy, dead-letter topic hoặc schema registry cho Kafka.
 - Chưa có authentication/authorization, rate limiting, health endpoint và metrics.
 - Application image dùng multi-stage build và non-root runtime user, nhưng chưa có image signing/SBOM/security scanning trong pipeline.

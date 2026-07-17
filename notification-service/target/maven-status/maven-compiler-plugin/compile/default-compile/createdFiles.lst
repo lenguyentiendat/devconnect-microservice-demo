@@ -1,4 +1,5 @@
 com\devconnect\notification\controller\NotificationController.class
+com\devconnect\notification\config\OpenApiCorsConfig.class
 com\devconnect\notification\dto\NotificationResponse.class
 com\devconnect\notification\service\NotificationService.class
 com\devconnect\notification\dto\ApiResponse.class

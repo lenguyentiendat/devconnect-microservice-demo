@@ -13,7 +13,7 @@ Base URL local phụ thuộc service:
 | Search | `http://localhost:8083` |
 | Notification | `http://localhost:8084` |
 
-Business response dùng envelope:
+Phần lớn business response dùng envelope:
 
 ```json
 {
@@ -22,6 +22,8 @@ Business response dùng envelope:
   "data": {}
 }
 ```
+
+Ngoại lệ hiện tại là `POST /api/feed/posts`: success response trả trực tiếp `PostResponse`, không bọc `ApiResponse`. Error response của endpoint này vẫn dùng envelope phía dưới.
 
 Error do `feed-service` và `user-service` chủ động tạo có dạng:
 
@@ -44,7 +46,7 @@ Project chưa version API, chưa có authentication, pagination hay OpenAPI endp
 | POST | `/api/users` | User | 201 |
 | PUT | `/api/users/{userId}` | User | 200 |
 | GET | `/internal/users/{userId}/status` | User | 200 |
-| POST | `/api/feed/posts` | Feed | 200 |
+| POST | `/api/feed/posts` | Feed | 201 |
 | GET | `/api/feed/posts` | Feed | 200 |
 | GET | `/api/feed/posts/{postId}` | Feed | 200 |
 | GET | `/api/search/posts?keyword=...` | Search | 200 |
@@ -67,11 +69,16 @@ Request body:
 |---|---|---|---|
 | `userId` | string | Có | Không blank, tối đa 64 ký tự và chưa tồn tại. |
 | `status` | string | Có | Chỉ nhận `ACTIVE` hoặc `INACTIVE`. |
+| `email` | string | Có | Email hợp lệ, tối đa 254 ký tự và chưa được user khác sử dụng. Giá trị được trim và chuyển thành chữ thường. |
 
 Ví dụ:
 
 ```powershell
-$body = @{ userId = "u004"; status = "ACTIVE" } | ConvertTo-Json
+$body = @{
+  userId = "u004"
+  status = "ACTIVE"
+  email = "user@example.com"
+} | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri "http://localhost:3000/api/users" -ContentType "application/json" -Body $body
 ```
 
@@ -83,12 +90,13 @@ Response `201 Created`:
   "message": "User created successfully",
   "data": {
     "userId": "u004",
-    "status": "ACTIVE"
+    "status": "ACTIVE",
+    "email": "user@example.com"
   }
 }
 ```
 
-Nếu `userId` đã tồn tại, API trả `409 Conflict` với message `User already exists`. Body thiếu, blank, `userId` dài hơn 64 ký tự hoặc status ngoài hai giá trị hợp lệ trả `400 Bad Request`.
+Nếu `userId` đã tồn tại, API trả `409 Conflict` với message `User already exists`. Nếu email đã tồn tại (không phân biệt chữ hoa/thường), API trả `409 Conflict` với message `Email already exists`. Email thiếu, blank, sai định dạng hoặc dài hơn 254 ký tự; `userId` không hợp lệ; hoặc status ngoài hai giá trị hợp lệ đều trả response validation chuẩn với `400 Bad Request`.
 
 ### Cập nhật user
 
@@ -97,11 +105,12 @@ PUT /api/users/{userId}
 Content-Type: application/json
 ```
 
-Body chỉ chứa status mới; endpoint không cho đổi `userId` và không tự tạo user:
+`status` vẫn bắt buộc. `email` là tùy chọn để giữ tương thích với client cũ: bỏ qua field này sẽ giữ nguyên email hiện tại; gửi email mới sẽ trim, chuyển thành chữ thường, validate và kiểm tra trùng. Endpoint không cho đổi `userId` và không tự tạo user:
 
 ```json
 {
-  "status": "INACTIVE"
+  "status": "INACTIVE",
+  "email": "new-address@example.com"
 }
 ```
 
@@ -113,12 +122,13 @@ Response `200 OK`:
   "message": "User updated successfully",
   "data": {
     "userId": "u004",
-    "status": "INACTIVE"
+    "status": "INACTIVE",
+    "email": "new-address@example.com"
   }
 }
 ```
 
-User không tồn tại nhận `404 Not Found` với message `User not found`. Status thiếu, blank hoặc không phải `ACTIVE`/`INACTIVE` nhận `400 Bad Request`.
+User không tồn tại nhận `404 Not Found` với message `User not found`. Status thiếu, blank hoặc không phải `ACTIVE`/`INACTIVE`, hay email được gửi nhưng blank/sai định dạng/quá 254 ký tự, nhận `400 Bad Request`. Email trùng nhận `409 Conflict` với message `Email already exists`.
 
 ### Lấy trạng thái user
 
@@ -171,7 +181,7 @@ Request body:
 | Field | Kiểu | Bắt buộc | Rule |
 |---|---|---|---|
 | `authorId` | string | Có | Không được null, rỗng hoặc chỉ có whitespace. |
-| `content` | string | Có | Không được null, rỗng hoặc chỉ có whitespace. |
+| `content` | string | Có | Không blank, tối đa 5000 ký tự và không chứa `spam`/`scam` (không phân biệt hoa thường). |
 
 Ví dụ:
 
@@ -184,22 +194,18 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-Response `200 OK`:
+Response `201 Created` trả trực tiếp `PostResponse`:
 
 ```json
 {
-  "success": true,
-  "message": "Post created successfully",
-  "data": {
-    "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
-    "authorId": "u001",
-    "content": "Spring Boot and Kafka",
-    "createdAt": "2026-07-14T03:15:30.123"
-  }
+  "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
+  "authorId": "u001",
+  "content": "Spring Boot and Kafka",
+  "createdAt": "2026-07-14T03:15:30.123"
 }
 ```
 
-Lưu ý: API hiện trả `200`, không trả `201 Created`, và không có header `Location`.
+Response không có message `Post created successfully` và hiện chưa trả header `Location`.
 
 Các lỗi có thể có:
 
@@ -207,10 +213,11 @@ Các lỗi có thể có:
 |---:|---|---|
 | 400 | `authorId is required` | `authorId` null/rỗng/blank. |
 | 400 | `content is required` | `content` null/rỗng/blank. |
-| 400 | `Author not found` | User Service trả 4xx, body không hợp lệ hoặc user không tồn tại. |
+| 400 | `Post content must not exceed 5000 characters` | Content dài hơn 5000 ký tự. |
+| 400 | `Post content contains prohibited words` | Content chứa `spam` hoặc `scam`, không phân biệt hoa thường. |
+| 400 | `Author not found` | Feign nhận 404 hoặc response envelope null/không thành công/không có data. |
 | 400 | `Author is not active` | User tồn tại nhưng status khác `ACTIVE`. |
-| 503 | `User Service returned server error` | User Service trả 5xx. |
-| 503 | `Failed to call User Service` | Lỗi kết nối/HTTP client khi gọi User Service. |
+| 503 | `Failed to call User Service` | Feign gặp HTTP error khác 404, lỗi kết nối, timeout hoặc decoding. |
 | 500 | `Internal server error` | Exception không được phân loại. |
 
 Ví dụ error body:
@@ -223,7 +230,7 @@ Ví dụ error body:
 }
 ```
 
-HTTP response chỉ xác nhận post đã được kiểm tra và logged batch Cassandra đã hoàn tất; không đảm bảo search index/notification đã sẵn sàng hoặc Kafka đã acknowledge message.
+Feed Service dùng OpenFeign để kiểm tra tác giả và chạy tác vụ này song song với content validation. HTTP response chỉ được trả sau khi cả hai validation và logged batch Cassandra đã hoàn tất; không đảm bảo search index/notification đã sẵn sàng hoặc Kafka đã acknowledge message.
 
 ### Lấy danh sách post
 
@@ -321,7 +328,7 @@ Response `200 OK`:
 - Không có pagination hoặc scoring.
 - Keyword rỗng match mọi post; thiếu query parameter làm Spring trả HTTP 400 theo error format mặc định của framework.
 
-Search index được cập nhật bất đồng bộ. Post vừa tạo có thể chưa xuất hiện ngay; index cũng mất hoàn toàn khi restart `search-service` và không tự rebuild từ Feed Service.
+Search index được cập nhật bất đồng bộ. Post vừa tạo có thể chưa xuất hiện ngay. Khi `search-service` restart, map cục bộ được rebuild bằng cách replay các event còn trong Kafka; API có thể trả dữ liệu thiếu trong lúc consumer catch up và không thể khôi phục event đã hết retention.
 
 ## 5. Notification Service
 
@@ -355,7 +362,7 @@ Response `200 OK`:
 }
 ```
 
-Endpoint luôn trả 200; user không có notification nhận `data: []`. Thứ tự notification không được bảo đảm và chưa có pagination/read status.
+Endpoint luôn trả 200; user không có notification nhận `data: []`. Thứ tự notification không được bảo đảm và chưa có pagination/read status. Khi service restart, notification và trạng thái dedup được dựng lại từ event Kafka còn retention; `notificationId`/`createdAt` có thể được sinh lại.
 
 ## 6. cURL tương đương
 

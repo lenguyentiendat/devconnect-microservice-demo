@@ -79,7 +79,7 @@ Consumer behavior:
 | Search | Upsert theo `postId`, kết quả cuối không nhân bản record. | Bỏ qua. |
 | Notification | Bỏ qua nếu `eventId` đã thấy trong process hiện tại. | Bỏ qua. |
 
-Chưa có persistent offset/idempotency coordination với business storage. Sau restart, Kafka offset vẫn thuộc broker nhưng toàn bộ read model in-memory mất; vì consumer group thường tiếp tục từ committed offset, service không tự tái tạo lại dữ liệu cũ. Muốn replay trong demo cần dùng group mới/reset offset và bảo đảm consumer khởi động từ `earliest`.
+Search và Notification implement partition-assignment callback để seek các partition được gán về đầu đúng một lần trong mỗi process. Vì vậy committed offset không ngăn việc rebuild read model sau restart. Search upsert theo `postId`; Notification dựng lại `processedEventIds` theo `eventId`. Các rebalance tiếp theo trong cùng process không replay lại. Cơ chế này chỉ phục hồi event còn trong Kafka retention và chỉ phù hợp mô hình một instance cho mỗi consumer service.
 
 ## 5. Compatibility rule khuyến nghị
 

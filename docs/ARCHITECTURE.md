@@ -30,7 +30,8 @@ Theo lựa chọn compact của demo, `UserInternalController` chứa cả hai p
 Là service điều phối luồng tạo post:
 
 - Validate `authorId` và `content` không rỗng.
-- Gọi `user-service` bằng Spring `RestClient`.
+- Gọi `user-service` bằng Spring Cloud OpenFeign qua `UserServiceClient` và `UserServiceAdapter`.
+- Chạy kiểm tra trạng thái tác giả và nội dung post song song trên `postTaskExecutor`, rồi kết hợp bằng `thenCombine()`.
 - Áp dụng rule tác giả phải `ACTIVE`.
 - Ghi post vào Cassandra bằng hai read model `posts_by_feed` và `posts_by_id`.
 - Phát `POST_CREATED` bằng `KafkaTemplate`.
@@ -38,9 +39,13 @@ Là service điều phối luồng tạo post:
 
 Đây là service duy nhất có exception response chuẩn hóa cho validation, business error, downstream error và unexpected error.
 
+`UserServiceAdapter` chỉ là outbound adapter nội bộ của Feed Service: nó bọc Feign client, kiểm tra response envelope và dịch exception. Nó không phải API Gateway. Một API Gateway trong tương lai sẽ nằm ở edge, nhận request từ client và route tới các service; giao tiếp nội bộ Feed → User vẫn có thể tiếp tục dùng OpenFeign.
+
 ### `search-service`
 
 Consume `POST_CREATED`, upsert post vào index trong memory theo `postId`, và tìm kiếm không phân biệt hoa thường bằng phép `String.contains` trên nội dung.
+
+Khi process khởi động, consumer seek các partition được gán về đầu đúng một lần để rebuild index từ event còn trong Kafka; các rebalance sau đó không tự replay lại.
 
 Đây không phải full-text search engine: không có tokenization, ranking, stemming, pagination hay persistent index.
 
@@ -48,14 +53,16 @@ Consume `POST_CREATED`, upsert post vào index trong memory theo `postId`, và t
 
 Consume `POST_CREATED` và tạo một notification cho chính tác giả. Service lưu thêm `processedEventIds` để bỏ qua event trùng theo `eventId` trong vòng đời hiện tại của process.
 
-Idempotency này cũng chỉ nằm trong memory, nên không còn hiệu lực sau restart.
+Khi process khởi động, consumer cũng replay các event còn trong Kafka đúng một lần để dựng lại notification và `processedEventIds`. `notificationId` và `createdAt` được sinh lại trong mỗi lần rebuild.
+
+Idempotency này vẫn chỉ nằm trong memory; map cục bộ mất khi restart nhưng được dựng lại từ các event còn retention.
 
 ### Bản đồ code chính
 
 | Module | Entry point | HTTP adapter | Business/persistence | Messaging |
 |---|---|---|---|---|
 | User | `UserServiceApplication` | `UserInternalController` | `UserService`, `UserRepository`, `UserEntity` | Không |
-| Feed | `FeedServiceApplication` | `FeedController` | `AsyncPostService`, `FeedService`, `CassandraPostStore` | `PostEventPublisher` |
+| Feed | `FeedServiceApplication` | `FeedController`, `UserServiceClient`, `UserServiceAdapter` | `FeedService`, `CassandraPostStore` | `PostEventPublisher` |
 | Search | `SearchServiceApplication` | `SearchController` | `PostSearchService` | `PostCreatedEventListener` |
 | Notification | `NotificationServiceApplication` | `NotificationController` | `NotificationService` | `PostCreatedEventListener` |
 
@@ -68,8 +75,9 @@ sequenceDiagram
     autonumber
     actor C as Client
     participant FC as FeedController
-    participant AP as AsyncPostService
     participant FS as FeedService
+    participant UA as UserServiceAdapter
+    participant UF as UserServiceClient (OpenFeign)
     participant US as user-service
     participant PG as PostgreSQL
     participant CA as Cassandra
@@ -78,34 +86,41 @@ sequenceDiagram
     participant NS as notification-service
 
     C->>FC: POST /api/feed/posts
-    FC->>AP: createPost(request)
-    AP-->>FC: CompletableFuture
-    Note over FC: Servlet request được chuyển sang async mode
-    AP->>FS: createPost(request) trên post-async-* thread
-    FS->>US: GET /internal/users/{id}/status
-    US->>PG: SELECT user by ID
-    PG-->>US: user/status
-    US-->>FS: ApiResponse<UserStatusResponse>
-    alt User ACTIVE
+    FC->>FS: createPost(request)
+    par Kiểm tra tác giả
+        FS->>UA: getUserStatus(authorId) trên post-async-* thread
+        UA->>UF: getUserStatus(authorId)
+        UF->>US: GET /internal/users/{id}/status
+        US->>PG: SELECT user by ID
+        PG-->>US: user/status
+        US-->>UF: ApiResponse<UserStatusResponse>
+        UF-->>UA: response hoặc FeignException
+        UA-->>FS: UserStatusResponse
+    and Kiểm tra nội dung
+        FS->>FS: validatePostContent(content) trên worker khác
+    end
+    FS->>FS: thenCombine() + validatePostCreation()
+    alt Tác giả ACTIVE và nội dung hợp lệ
         FS->>CA: Logged batch: feed row + ID row
         CA-->>FS: Write applied
         FS->>K: send POST_CREATED (key = postId)
-        FS-->>AP: PostResponse
-        AP-->>FC: Complete future
-        FC-->>C: HTTP 200
+        FS-->>FC: PostResponse
+        FC-->>C: HTTP 201 + PostResponse
         K-->>SS: POST_CREATED
         SS->>SS: Upsert search index
         K-->>NS: POST_CREATED
         NS->>NS: Deduplicate và tạo notification
-    else User không tồn tại/INACTIVE/downstream lỗi
-        FS-->>FC: Exception qua failed future
+    else Validation hoặc downstream lỗi
+        FS-->>FC: BusinessException / DownstreamServiceException
         FC-->>C: HTTP 400/503/500
     end
 ```
 
-### Async bên trong `feed-service`
+### Parallel validation bên trong `feed-service`
 
-`AsyncPostService.createPost()` được annotate `@Async("postTaskExecutor")` và trả `CompletableFuture`. Spring MVC giữ HTTP connection bằng async servlet processing, còn blocking call đến `user-service` chạy trên pool `post-async-*`.
+`FeedController.createPost()` giữ contract đồng bộ: gọi `FeedService.createPost()` và trả `ResponseEntity<PostResponse>` với HTTP 201. Controller không expose `CompletableFuture` và không chuyển servlet request sang async mode.
+
+Trong `FeedService`, `authorStatusFuture` gọi OpenFeign và `contentValidationFuture` kiểm tra nội dung. Cả hai future được submit trước khi `thenCombine(...).join()` chờ kết quả, nên executor có ít nhất hai worker sẽ chạy chúng đồng thời. Thời gian validation gần với tác vụ lâu nhất thay vì tổng thời gian của hai tác vụ độc lập.
 
 Executor mặc định:
 
@@ -117,7 +132,7 @@ Executor mặc định:
 | Await termination | 30 giây | Thời gian chờ task khi shutdown. |
 | Rejection policy | `CallerRunsPolicy` | Request thread tự chạy task khi pool và queue đều đầy, tạo backpressure. |
 
-Async này không biến `RestClient` thành non-blocking I/O; nó chỉ chuyển nơi chờ sang một executor được giới hạn riêng. Xem [Async Java trong DevConnect](../ASYNC-JAVA.md) để hiểu chi tiết.
+OpenFeign vẫn là blocking I/O. `join()` cũng giữ HTTP request thread chờ tới khi cả hai validation hoàn tất; parallelism này giảm latency của các bước độc lập nhưng không tăng khả năng phục vụ request theo cách non-blocking. Connect timeout và read timeout của named client `user-service` đều là 5 giây. Xem [Async Java trong DevConnect](../ASYNC-JAVA.md) để hiểu chi tiết.
 
 ### Async giữa các service
 
@@ -137,9 +152,9 @@ Trong cùng một group, Kafka phân phối mỗi partition cho một consumer i
 |---|---|---|---|
 | User status | `user-service` | PostgreSQL `users` | Không |
 | Post | `feed-service` | Cassandra `posts_by_feed`, `posts_by_id` | Không |
-| Search index | `search-service` | `ConcurrentHashMap<postId, post>` | Có |
-| Notification | `notification-service` | `ConcurrentHashMap<notificationId, notification>` | Có |
-| Processed event IDs | `notification-service` | `ConcurrentHashMap<eventId, boolean>` | Có |
+| Search index | `search-service` | `ConcurrentHashMap<postId, post>` | Có; rebuild từ event Kafka còn retention |
+| Notification | `notification-service` | `ConcurrentHashMap<notificationId, notification>` | Có; rebuild từ event Kafka còn retention |
+| Processed event IDs | `notification-service` | `ConcurrentHashMap<eventId, boolean>` | Có; rebuild từ event Kafka còn retention |
 
 Không service nào đọc trực tiếp storage của service khác. `feed-service` lấy trạng thái user qua API; search và notification xây read model riêng từ event.
 
@@ -160,7 +175,7 @@ Hai row được ghi trong một logged batch. Batch đa partition chỉ hợp l
 
 ### Tạo post và kiểm tra user
 
-Đây là nhánh strongly ordered trong phạm vi request: post chỉ được tạo sau khi `user-service` trả về user `ACTIVE`. Nếu user không tồn tại hoặc inactive, map lỗi về HTTP 400. Nếu không kết nối được User Service hoặc service trả 5xx, map về HTTP 503.
+Đây là nhánh strongly ordered trong phạm vi request: post chỉ được tạo sau khi `user-service` trả về user `ACTIVE` và content validation cho phép. Feign `404`, response envelope null/không thành công/không có data được adapter map thành `Author not found` và HTTP 400. Feign HTTP, connection hoặc decoding error còn lại được map thành `Failed to call User Service` và HTTP 503.
 
 ### Lưu post và publish event
 
@@ -179,6 +194,8 @@ Kafka thường được vận hành với at-least-once processing. Code hiện
 - Search upsert theo `postId`, nên xử lý lại cùng dữ liệu không tạo thêm bản ghi.
 - Notification deduplicate theo `eventId`, nhưng trạng thái dedup không persistent.
 
+Search và Notification chủ động seek về đầu các partition ở lần assignment đầu tiên của mỗi process. Replay khôi phục read model sau restart dù consumer group đã có committed offset. Trong lúc catch-up, API có thể trả kết quả rỗng hoặc chưa đầy đủ; event đã hết Kafka retention không thể được khôi phục. Thiết kế vẫn chỉ đúng khi mỗi consumer service chạy một instance vì mỗi instance chỉ giữ map cục bộ.
+
 Chưa có retry/backoff tùy chỉnh, dead-letter topic hoặc handler cho poison message.
 
 ## 6. Error model
@@ -191,8 +208,10 @@ flowchart TD
     U -- 404 / invalid body --> E400N[400: Author not found]
     U -- User INACTIVE --> E400I[400: Author is not active]
     U -- 5xx / connection error --> E503[503: downstream error]
-    U -- ACTIVE --> P[Lưu post và bắt đầu publish]
-    P --> OK[200: Post created successfully]
+    U -- ACTIVE --> C{Content hợp lệ?}
+    C -- blank / quá 5000 / chứa spam hoặc scam --> E400C[400: content error]
+    C -- Có --> P[Lưu post và bắt đầu publish]
+    P --> OK[201: PostResponse]
     R -. unexpected exception .-> E500[500: Internal server error]
 ```
 
@@ -216,7 +235,7 @@ Các nâng cấp quan trọng, theo thứ tự ưu tiên hợp lý:
 2. Bổ sung outbox/CDC phù hợp Cassandra hoặc chuyển transactional post/outbox sang PostgreSQL để tránh khoảng trống giữa lưu post và publish Kafka.
 3. Persistent idempotency/inbox cho consumer, kèm retry có backoff và dead-letter topic.
 4. Định nghĩa schema event có version; dùng schema registry hoặc contract test để kiểm soát compatibility.
-5. Cấu hình connect/read timeout, retry có giới hạn và circuit breaker cho HTTP call tới `user-service`.
+5. Giữ connect/read timeout phù hợp theo môi trường; bổ sung retry có giới hạn và circuit breaker cho OpenFeign call tới `user-service`.
 6. Thêm authentication/authorization; không public endpoint `/internal/**` ra ngoài gateway.
 7. Thêm Actuator health/readiness, Micrometer metrics, structured logging, correlation ID và distributed tracing.
 8. Bổ sung integration test với Kafka thật/Testcontainers và end-to-end test.

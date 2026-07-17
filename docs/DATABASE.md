@@ -10,10 +10,10 @@ DevConnect dùng polyglot persistence: mỗi loại dữ liệu được lưu tr
 |---|---|---|---|
 | User/status | User Service | PostgreSQL | Persistent qua named volume. |
 | Post/feed | Feed Service | Cassandra | Persistent qua named volume. |
-| Search index | Search Service | `ConcurrentHashMap` | Mất khi restart. |
-| Notification/dedup | Notification Service | `ConcurrentHashMap` | Mất khi restart. |
+| Search index | Search Service | `ConcurrentHashMap` | Map mất khi restart; rebuild từ event Kafka còn retention. |
+| Notification/dedup | Notification Service | `ConcurrentHashMap` | Map mất khi restart; rebuild từ event Kafka còn retention. |
 
-Service không truy cập trực tiếp database của service khác. Feed Service hỏi User Service qua HTTP thay vì query PostgreSQL.
+Service không truy cập trực tiếp database của service khác. Feed Service hỏi User Service qua OpenFeign HTTP client (`GET /internal/users/{userId}/status`) thay vì query PostgreSQL.
 
 ## 2. PostgreSQL của User Service
 
@@ -36,6 +36,7 @@ Migration nằm tại:
 
 ```text
 user-service/src/main/resources/db/migration/V1__create_users.sql
+user-service/src/main/resources/db/migration/V2__add_user_email.sql
 ```
 
 Schema:
@@ -44,9 +45,15 @@ Schema:
 CREATE TABLE users (
     user_id VARCHAR(64) PRIMARY KEY,
     status VARCHAR(32) NOT NULL,
+    email VARCHAR(254),
+    email_normalized VARCHAR(254)
+        GENERATED ALWAYS AS (LOWER(email)) STORED,
     CONSTRAINT users_status_check
         CHECK (status IN ('ACTIVE', 'INACTIVE'))
 );
+
+CREATE UNIQUE INDEX users_email_lower_unique
+    ON users (email_normalized);
 ```
 
 Migration seed ba user:
@@ -63,7 +70,11 @@ Flyway chạy trước khi JPA EntityManager sẵn sàng. Hibernate dùng `ddl-a
 - Hibernate không tự tạo hoặc tự cập nhật table.
 - Mapping/schema sai làm User Service fail startup.
 
-`POST /api/users` và `PUT /api/users/{userId}` ghi vào chính bảng `users` hiện có. Hai endpoint chỉ dùng hai cột `user_id` và `status`, nên không cần migration mới; constraint primary key và status check tiếp tục là lớp bảo vệ cuối cùng ở database.
+`V2__add_user_email.sql` thêm `email` và generated column `email_normalized = LOWER(email)`, rồi tạo unique index trên giá trị normalized. PostgreSQL yêu cầu từ khóa `STORED`; integration test H2 dùng cùng migration nhưng thay placeholder Flyway `emailGeneratedStorage` bằng chuỗi rỗng vì H2 không nhận từ khóa này.
+
+Hai cột mới để nullable nhằm migrate an toàn khi database đã có dữ liệu. Ba user seed và mọi record cũ tiếp tục có email `NULL`; migration không tạo email giả. API bắt buộc email cho user mới, còn PUT không gửi email vẫn tương thích và giữ giá trị hiện tại. Chỉ nên thêm constraint `NOT NULL` trong migration sau khi operator đã chuẩn bị email thật cho toàn bộ record cũ.
+
+Service kiểm tra duplicate trước khi ghi để trả lỗi rõ ràng, còn `users_email_lower_unique` là lớp bảo vệ race condition cuối cùng ở database. Primary key và status check hiện có vẫn giữ nguyên.
 
 ### Quy tắc migration
 
@@ -77,7 +88,7 @@ Flyway chạy trước khi JPA EntityManager sẵn sàng. Hibernate dùng `ddl-a
 ```bash
 docker compose exec postgres \
   psql -U devconnect -d devconnect_users \
-  -c "SELECT user_id, status FROM users ORDER BY user_id;"
+  -c "SELECT user_id, status, email FROM users ORDER BY user_id;"
 ```
 
 Flyway history:
@@ -204,7 +215,7 @@ Sau reset:
 2. Cassandra Init tạo keyspace.
 3. Feed Service tạo table khi khởi động.
 
-Search/Notification không dùng volume và mất data mỗi lần container restart.
+Search/Notification không dùng volume. Mỗi process mới seek Kafka về đầu đúng một lần và dựng lại map từ các event còn retention; dữ liệu vẫn không phải persistent storage của service.
 
 ## 5. Giới hạn mô hình hiện tại
 

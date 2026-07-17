@@ -1,99 +1,112 @@
-# Áp dụng Async Java trong DevConnect
+# Parallel và Async Java trong DevConnect
 
 > Điều hướng: [Mục lục documentation](docs/README.md) · [Kiến trúc](docs/ARCHITECTURE.md) · [Development](docs/DEVELOPMENT.md)
 
 ## 1. Mục tiêu
 
-Luồng tạo bài viết ban đầu chạy hoàn toàn trên thread HTTP:
+Luồng tạo post phải đợi các điều kiện bắt buộc trước khi trả thành công:
+
+- Tác giả tồn tại và có trạng thái `ACTIVE`.
+- Nội dung post hợp lệ.
+- Logged batch Cassandra đã hoàn tất.
+
+Kiểm tra tác giả và kiểm tra nội dung chỉ phụ thuộc request, không phụ thuộc kết quả của nhau. `FeedService` chạy hai tác vụ này song song để thời gian validation gần với tác vụ lâu nhất thay vì tổng thời gian của cả hai.
 
 ```text
-HTTP thread -> FeedService -> gọi đồng bộ User Service -> lưu post -> gửi Kafka -> trả response
+                              +-> OpenFeign: lấy trạng thái tác giả --+
+HTTP request -> FeedService --|                                      |-> thenCombine -> validate -> lưu post
+                              +-> kiểm tra nội dung ------------------+
 ```
 
-`RestClient` là blocking I/O. Trong lúc chờ User Service, thread HTTP vẫn bị chiếm. Bản triển khai mới chuyển toàn bộ use case tạo post sang một executor riêng và trả `CompletableFuture` cho Spring MVC:
-
-```text
-HTTP thread -> AsyncPostService -> trả CompletableFuture cho Spring MVC
-                         |
-                         +-> post-async-* thread -> FeedService
-                                                  -> User Service
-                                                  -> lưu post
-                                                  -> Kafka
-
-Kafka -> Search Service (consumer group riêng)
-      -> Notification Service (consumer group riêng)
-```
-
-Kết quả nghiệp vụ không đổi: API chỉ trả thành công sau khi đã xác minh tác giả và lưu post. Điểm thay đổi là servlet/request thread được trả về container trong lúc công việc chạy ở executor chuyên dụng.
-
-## 2. Vì sao chọn `@Async` và `CompletableFuture`
-
-- Project dùng Spring MVC và `RestClient`, tức là stack blocking. `@Async` phù hợp để tách blocking I/O khỏi request pool mà không cần đổi toàn bộ project sang WebFlux.
-- `CompletableFuture` biểu diễn kết quả sẽ có trong tương lai. Spring MVC nhận kiểu trả về này, giữ HTTP connection bằng cơ chế async servlet và ghi response khi future hoàn tất.
-- Executor riêng giúp tác vụ tạo post không dùng chung pool mặc định với các tác vụ nền khác.
-- Pool và queue đều có giới hạn để tránh tạo thread không kiểm soát khi lưu lượng tăng cao.
-- `KafkaTemplate.send()` đã bất đồng bộ và trả future, nên không cần bọc thêm một lớp `@Async`.
-
-## 3. Các bước đã áp dụng
-
-### Bước 1: Bật async và tạo executor riêng
-
-File `feed-service/src/main/java/com/devconnect/feed/config/AsyncConfig.java`:
-
-- `@EnableAsync` bật cơ chế proxy cho `@Async`.
-- Bean có tên `postTaskExecutor` để code chỉ rõ pool cần sử dụng.
-- `corePoolSize`: số worker thường trực.
-- `maxPoolSize`: số worker tối đa khi queue đầy.
-- `queueCapacity`: số task tối đa được chờ trong bộ nhớ.
-- Prefix `post-async-` giúp nhận diện thread trong log và thread dump.
-- `CallerRunsPolicy` tạo backpressure: khi pool và queue đều đầy, thread gửi task tự chạy task; request chậm lại thay vì task bị mất.
-- Khi shutdown, service đợi task đang chạy hoàn thành tối đa theo cấu hình.
-
-Thứ tự nhận task của `ThreadPoolTaskExecutor` là:
-
-1. Tạo tối đa `core-pool-size` worker.
-2. Khi các core worker bận, đưa task vào queue.
-3. Khi queue đầy, tăng worker đến `max-pool-size`.
-4. Khi cả pool và queue đầy, áp dụng `CallerRunsPolicy`.
-
-### Bước 2: Tách async boundary sang bean riêng
-
-File `feed-service/src/main/java/com/devconnect/feed/service/AsyncPostService.java` có:
+Controller vẫn là synchronous HTTP boundary:
 
 ```java
-@Async("postTaskExecutor")
-public CompletableFuture<PostResponse> createPost(CreatePostRequest request) {
-    PostResponse post = feedService.createPost(request);
-    return CompletableFuture.completedFuture(post);
+@PostMapping
+public ResponseEntity<PostResponse> createPost(
+        @Valid @RequestBody CreatePostRequest request
+) {
+    PostResponse response = feedService.createPost(request);
+    return ResponseEntity.status(HttpStatus.CREATED).body(response);
 }
 ```
 
-Phải đặt method này ở bean riêng. Spring triển khai `@Async` qua proxy; gọi một method `@Async` từ method khác trong cùng object (self-invocation) sẽ đi thẳng vào object và không qua proxy, nên tác vụ vẫn chạy đồng bộ.
+API trả `201 Created` với raw `PostResponse`. Controller không trả hoặc expose `CompletableFuture`.
 
-`FeedService` tiếp tục giữ logic nghiệp vụ đồng bộ. Cách tách này có ba lợi ích:
+## 2. Parallel không đồng nghĩa non-blocking
 
-- Logic nghiệp vụ dễ đọc và dễ unit test.
-- Async chỉ nằm ở boundary của use case.
-- Không ép mọi caller của `FeedService.createPost()` phải chạy async.
+Hai khái niệm cần tách biệt:
 
-### Bước 3: Cho controller trả `CompletableFuture`
+- **Parallel trong một request:** hai tác vụ độc lập chạy cùng lúc trên hai worker thread để giảm latency.
+- **Non-blocking HTTP:** request thread không bị giữ trong lúc chờ I/O.
 
-File `feed-service/src/main/java/com/devconnect/feed/controller/FeedController.java` đổi endpoint POST thành:
+Implementation hiện tại chỉ đạt mục tiêu thứ nhất. `FeedService.createPost()` gọi `.join()`, vì vậy HTTP request thread vẫn chờ tới khi hai future hoàn thành. OpenFeign cũng là blocking I/O. Cách làm này không tăng khả năng phục vụ đồng thời giống WebFlux/non-blocking client; lợi ích chính là giảm thời gian chờ khi hai validation đều đủ tốn thời gian và thực sự độc lập.
 
-```java
-public CompletableFuture<ApiResponse<PostResponse>> createPost(...) {
-    return asyncPostService.createPost(request)
-            .thenApply(post -> ApiResponse.success("Post created successfully", post));
-}
+Ví dụ:
+
+```text
+Tuần tự:  author status 700 ms + content validation 500 ms ≈ 1200 ms
+Song song: max(700 ms, 500 ms)                         ≈ 700 ms
 ```
 
-`thenApply` chỉ tạo `ApiResponse` sau khi post được tạo. Không gọi `join()` hoặc `get()` trong controller, vì hai lệnh đó sẽ block request thread và triệt tiêu lợi ích của async.
+Content validation của demo chỉ chạy local và rất nhanh, nên mức cải thiện thực tế có thể nhỏ. Lợi ích rõ hơn nếu bước này gọi Content Moderation Service hoặc thực hiện một tác vụ độc lập có latency đáng kể.
 
-Validation `@Valid` vẫn chạy trước khi controller được gọi. Exception từ worker làm future hoàn tất ở trạng thái lỗi; Spring MVC dispatch lỗi trở lại pipeline xử lý exception hiện có.
+## 3. Cách `FeedService` chạy hai tác vụ
 
-### Bước 4: Đưa tham số pool ra cấu hình
+Hai future phải được tạo trước khi chờ:
 
-File `feed-service/src/main/resources/application.yaml` thêm:
+```java
+CompletableFuture<UserStatusResponse> authorStatusFuture =
+        CompletableFuture.supplyAsync(
+                () -> getAuthorStatus(request.authorId()),
+                postTaskExecutor
+        );
+
+CompletableFuture<ContentValidationResponse> contentValidationFuture =
+        CompletableFuture.supplyAsync(
+                () -> validatePostContent(request.content()),
+                postTaskExecutor
+        );
+
+PostCreationValidation validation = authorStatusFuture
+        .thenCombine(
+                contentValidationFuture,
+                PostCreationValidation::new
+        )
+        .join();
+```
+
+`thenCombine()` chỉ tạo `PostCreationValidation` khi cả hai future hoàn thành thành công. Sau đó service kiểm tra kết quả và chỉ gọi `createAndSavePost()` khi tác giả lẫn nội dung đều hợp lệ.
+
+Không viết theo cách join future thứ nhất trước khi tạo future thứ hai:
+
+```java
+UserStatusResponse author = CompletableFuture
+        .supplyAsync(() -> getAuthorStatus(authorId), postTaskExecutor)
+        .join();
+
+ContentValidationResponse content = CompletableFuture
+        .supplyAsync(() -> validatePostContent(value), postTaskExecutor)
+        .join();
+```
+
+Cách trên vẫn tuần tự vì task thứ hai chỉ được submit sau khi task thứ nhất hoàn tất.
+
+## 4. Executor
+
+`AsyncConfig` cung cấp bean `postTaskExecutor` bằng `ThreadPoolTaskExecutor`:
+
+| Thuộc tính | Mặc định | Ý nghĩa |
+|---|---:|---|
+| Core pool size | 4 | Số worker duy trì bình thường. |
+| Max pool size | 16 | Số worker tối đa khi queue đầy. |
+| Queue capacity | 100 | Số task chờ tối đa trong memory. |
+| Await termination | 30 giây | Thời gian chờ task khi shutdown. |
+| Thread prefix | `post-async-` | Nhận diện worker trong log/thread dump. |
+| Rejection policy | `CallerRunsPolicy` | Caller tự chạy task khi pool và queue đầy để tạo backpressure. |
+
+Hai task chỉ có thể chạy đồng thời nếu executor có ít nhất hai worker sẵn sàng. `@EnableAsync` vẫn có trên configuration, nhưng parallelism của use case hiện tại đến từ `CompletableFuture.supplyAsync(..., postTaskExecutor)`, không phụ thuộc một method `@Async` hay Spring proxy.
+
+Runtime config:
 
 ```yaml
 app:
@@ -105,102 +118,105 @@ app:
       await-termination-seconds: ${POST_ASYNC_AWAIT_TERMINATION_SECONDS:30}
 ```
 
-Có thể điều chỉnh khi deploy mà không sửa code. Ví dụ PowerShell:
+Không tăng pool tùy ý. Nhiều worker hơn có thể chuyển điểm nghẽn sang User Service, Cassandra hoặc tài nguyên socket/CPU của Feed Service.
 
-```powershell
-$env:POST_ASYNC_CORE_POOL_SIZE = "8"
-$env:POST_ASYNC_MAX_POOL_SIZE = "32"
-$env:POST_ASYNC_QUEUE_CAPACITY = "200"
+## 5. OpenFeign boundary
+
+`UserServiceClient` khai báo HTTP contract:
+
+```java
+@FeignClient(name = "user-service")
+public interface UserServiceClient {
+
+    @GetMapping("/internal/users/{userId}/status")
+    ApiResponse<UserStatusResponse> getUserStatus(
+            @PathVariable("userId") String userId
+    );
+}
 ```
 
-Không nên tăng các số này tùy ý. Mỗi worker đang thực hiện blocking call đến User Service; pool quá lớn có thể chuyển điểm nghẽn sang User Service hoặc socket/connection của hệ thống.
+`UserServiceAdapter` bọc Feign client để `FeedService` không phụ thuộc vào `FeignException`:
 
-### Bước 5: Kiểm thử đúng executor và đường lỗi
+- Feign `404` hoặc envelope null/không thành công/không có data → `BusinessException("Author not found")` → HTTP 400.
+- Feign HTTP error khác, lỗi kết nối, timeout hoặc decoding → `DownstreamServiceException("Failed to call User Service")` → HTTP 503.
 
-File `feed-service/src/test/java/com/devconnect/feed/service/AsyncPostServiceTests.java` kiểm tra:
+Adapter này không phải API Gateway. Nó là outbound adapter bên trong Feed Service. API Gateway trong tương lai là edge component nhận request từ client và route tới các service.
 
-- Logic thực sự chạy trên thread có prefix `post-async-`, khác thread gọi test.
-- Kết quả từ worker được trả qua future.
-- `BusinessException` làm future complete exceptionally, không bị nuốt mất.
+Named client `user-service` dùng URL từ `USER_SERVICE_BASE_URL`; connect timeout và read timeout đều là 5000 ms:
 
-File `feed-service/src/test/java/com/devconnect/feed/controller/FeedControllerAsyncTests.java` kiểm tra Spring MVC thực sự bắt đầu async request, trả response khi future hoàn tất và vẫn chuyển `BusinessException` tới `GlobalExceptionHandler` để trả HTTP 400.
-
-## 4. Chạy project
-
-Để chạy full stack chỉ cần Docker và Docker Compose. JDK 21/Maven chỉ cần khi chạy test hoặc application trực tiếp trên host.
-
-Build và khởi động toàn bộ hệ thống tại thư mục gốc:
-
-```powershell
-docker compose up -d --build
+```yaml
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          user-service:
+            url: ${USER_SERVICE_BASE_URL:http://localhost:8081}
+            connectTimeout: 5000
+            readTimeout: 5000
 ```
 
-Kiểm tra trạng thái và theo dõi log application:
+## 6. Exception từ `CompletableFuture`
 
-```powershell
-docker compose ps -a
-docker compose logs -f user-service feed-service search-service notification-service
+Nếu task ném exception, `.join()` bọc nguyên nhân trong `CompletionException`. `FeedService` unwrap để giữ đúng business/downstream error:
+
+```java
+private RuntimeException unwrapCompletionException(
+        CompletionException exception
+) {
+    Throwable cause = exception.getCause();
+
+    if (cause instanceof RuntimeException runtimeException) {
+        return runtimeException;
+    }
+
+    return new IllegalStateException("Post creation failed", cause);
+}
 ```
 
-Muốn chạy application trực tiếp bằng Maven để debug, chỉ khởi động các infrastructure service như hướng dẫn trong `docs/DEVELOPMENT.md`.
+Nhờ vậy `GlobalExceptionHandler` vẫn map `BusinessException` thành HTTP 400 và `DownstreamServiceException` thành HTTP 503.
 
-## 5. Kiểm tra API
+## 7. Async giữa các microservice
 
-Tạo post với user đang hoạt động:
+Sau khi validation và Cassandra write thành công, Feed Service gọi `KafkaTemplate.send()` để publish `POST_CREATED`. Việc publish là fire-and-observe: API không chờ broker acknowledge trước khi trả HTTP 201.
 
-```powershell
-$body = @{ authorId = "u001"; content = "Hoc Async Java" } | ConvertTo-Json
-$post = Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8082/api/feed/posts `
-  -ContentType "application/json" `
-  -Body $body
-$post
+```text
+Feed Service -> Kafka topic post-events
+                    +-> search-service-group       -> search index
+                    +-> notification-service-group -> notification
 ```
 
-Sau khi Kafka consumer xử lý sự kiện, kiểm tra search và notification:
+Đây mới là asynchronous boundary giữa các service. Search và notification chấp nhận eventual consistency; chúng có thể hoàn thành sau response create-post. Ngược lại, kiểm tra tác giả không thể fire-and-forget vì kết quả là điều kiện để chấp nhận post.
+
+## 8. Kiểm thử
+
+Các test liên quan hiện tại:
+
+- `FeedServiceParallelValidationTests`: chứng minh hai task có thể chạy trên hai worker khác nhau và post không được lưu khi content bị từ chối.
+- `FeedServiceUserContractTests`: kiểm tra author `ACTIVE`, inactive và không tồn tại.
+- `UserServiceAdapterTests`: kiểm tra response envelope, Feign 404 và downstream exception mapping.
+- `FeedControllerTests`: kiểm tra synchronous controller trả HTTP 201/raw `PostResponse` và chuyển business exception tới handler.
+- `FeedServiceApplicationTests`: xác nhận Spring context tạo được Feign proxy `UserServiceClient`.
+
+Chạy riêng Feed Service:
 
 ```powershell
-Invoke-RestMethod "http://localhost:8083/api/search/posts?keyword=Async"
-Invoke-RestMethod "http://localhost:8084/api/notifications/users/u001"
+mvn -pl feed-service test
 ```
 
-Kiểm tra đường lỗi với user không hoạt động:
+Log mong đợi khi hai task chạy song song có hai thread khác nhau:
 
-```powershell
-$body = @{ authorId = "u003"; content = "Khong duoc tao" } | ConvertTo-Json
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8082/api/feed/posts `
-  -ContentType "application/json" `
-  -Body $body
+```text
+Getting author status on thread: post-async-1
+Validating content on thread: post-async-2
 ```
 
-Kỳ vọng HTTP 400 với message `Author is not active`.
+## 9. Lưu ý production
 
-Chạy toàn bộ test từ thư mục gốc:
-
-```powershell
-.\feed-service\mvnw.cmd -f .\pom.xml test
-```
-
-## 6. Async đang tồn tại ở hai cấp khác nhau
-
-### Async trong cùng một JVM
-
-`@Async` + `CompletableFuture` chạy công việc trên executor của `feed-service`. Nó giúp quản lý thread và thời gian chờ HTTP, nhưng task không bền vững: nếu process chết giữa chừng, task trong memory mất theo.
-
-### Async giữa các microservice
-
-Kafka tách việc tạo post khỏi index search và tạo notification. Event nằm ở broker, các consumer group xử lý độc lập. Đây là lựa chọn phù hợp cho side effect có thể eventual-consistent.
-
-Không nên chuyển bước kiểm tra tác giả sang kiểu fire-and-forget, vì `feed-service` phải biết user có `ACTIVE` trước khi chấp nhận post.
-
-## 7. Lưu ý production
-
-- User đã được lưu trong PostgreSQL và post trong Cassandra; search index/notification vẫn ở `ConcurrentHashMap`. Cần giải pháp outbox/CDC để tránh trường hợp lưu post Cassandra thành công nhưng gửi Kafka thất bại.
-- Đặt timeout cho lời gọi User Service. Async không tự tạo timeout; nó chỉ chuyển nơi chờ sang pool khác.
-- Theo dõi active thread, queue size, thời gian thực thi và số lần reject bằng Micrometer/Actuator.
-- Truyền correlation ID/MDC sang worker nếu hệ thống dùng distributed tracing.
-- Các Kafka consumer nên cấu hình retry và dead-letter topic cho lỗi không phục hồi được.
-- Chọn kích thước pool bằng load test. Khởi điểm có thể ước lượng theo Little's Law: concurrency xấp xỉ throughput mục tiêu nhân thời gian chờ trung bình, rồi giới hạn theo khả năng chịu tải của User Service.
+- Đo latency thực tế trước khi duy trì parallel local validation; task quá nhỏ có thể không bù được chi phí scheduling.
+- Tách executor theo loại workload nếu content moderation sau này dùng CPU nặng, tránh dùng chung pool với blocking HTTP I/O.
+- Bổ sung circuit breaker, retry có giới hạn và metrics cho OpenFeign; tránh retry mù quáng làm tăng tải User Service.
+- Theo dõi active thread, queue size, reject count, Feign latency và timeout bằng Actuator/Micrometer.
+- Truyền correlation ID/MDC sang worker để giữ distributed tracing xuyên qua `CompletableFuture`.
+- Dùng outbox/CDC nếu cần bảo đảm post đã lưu luôn có event tương ứng; hiện lỗi Kafka sau Cassandra write không rollback post.
+- Nếu mục tiêu là giải phóng request thread trong lúc chờ I/O, cân nhắc Spring MVC async return type/`DeferredResult` hoặc WebFlux end-to-end. Đó là thay đổi kiến trúc khác với parallelism hiện tại.

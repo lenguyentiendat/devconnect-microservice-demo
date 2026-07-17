@@ -187,6 +187,42 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  swagger-spec:
+    image: python:3.12-alpine
+    container_name: devconnect-swagger-spec
+    command: ["python", "/tools/aggregate_openapi.py"]
+    volumes:
+      - ./tools/aggregate_openapi.py:/tools/aggregate_openapi.py:ro
+      - swagger-spec:/out
+    depends_on:
+      user-service:
+        condition: service_healthy
+      feed-service:
+        condition: service_healthy
+      search-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.21.0
+    container_name: devconnect-swagger-ui
+    ports:
+      - "8090:8080"
+    environment:
+      SWAGGER_JSON: /out/openapi.json
+    volumes:
+      - swagger-spec:/out:ro
+    depends_on:
+      swagger-spec:
+        condition: service_completed_successfully
+
 volumes:
   postgres-data:
   cassandra-data:
+  swagger-spec:
+
+networks:
+  default:
+    name: devconnect-network
+    external: true

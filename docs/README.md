@@ -7,6 +7,7 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 1. Đọc [README project](../README.md) để hiểu mục tiêu và kiến trúc tổng quan.
 2. Đọc [Docker và Ubuntu/WSL](DOCKER.md) để chạy toàn bộ 9 service bằng một lệnh.
 3. Dùng [REST API reference](API.md) để kiểm tra luồng end-to-end.
+4. Mở [Swagger/OpenAPI guide](OPENAPI.md) để truy cập Swagger UI tổng hợp cho toàn bộ service.
 
 ## Phát triển source
 
@@ -14,7 +15,7 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 2. [Phát triển và kiểm thử](DEVELOPMENT.md): Maven workflow, chạy trên host, biến môi trường và test strategy.
 3. [PostgreSQL và Cassandra](DATABASE.md): schema, migration, query model và kiểm tra dữ liệu.
 4. [Kafka event reference](EVENTS.md): topic, payload, consumer group, delivery và compatibility.
-5. [Async Java](../ASYNC-JAVA.md): `@Async`, `CompletableFuture`, executor và backpressure.
+5. [Async Java](../ASYNC-JAVA.md): parallel validation bằng `CompletableFuture`, executor, OpenFeign blocking I/O và Kafka async.
 
 ## Vận hành local
 
@@ -29,11 +30,12 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 | [README](../README.md) | Tổng quan và quick start | Tất cả |
 | [ARCHITECTURE](ARCHITECTURE.md) | Thiết kế service và luồng dữ liệu | Developer/architect |
 | [API](API.md) | REST contract, status code và ví dụ | Client/backend developer |
+| [OPENAPI](OPENAPI.md) | Swagger UI tổng hợp và OpenAPI JSON cho 4 service | Client/backend developer |
 | [EVENTS](EVENTS.md) | Kafka contract và delivery semantics | Backend/platform developer |
 | [DATABASE](DATABASE.md) | PostgreSQL/Flyway và Cassandra model | Backend/DBA |
 | [DOCKER](DOCKER.md) | Full-stack Compose trên Ubuntu/WSL | Developer/operator |
 | [DEVELOPMENT](DEVELOPMENT.md) | Maven, test, cấu hình và debug | Developer |
-| [ASYNC-JAVA](../ASYNC-JAVA.md) | Async boundary trong Feed Service | Java developer |
+| [ASYNC-JAVA](../ASYNC-JAVA.md) | Parallelism trong Feed Service và async qua Kafka | Java developer |
 
 ## Thông tin hệ thống cố định
 
@@ -41,7 +43,7 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 - 5 infrastructure/utility service: PostgreSQL, Cassandra, Cassandra Init, Kafka, Kafka UI.
 - Tổng số Compose service: 9.
 - PostgreSQL sở hữu user data; Cassandra sở hữu post data.
-- Search index và notification hiện vẫn lưu trong memory.
+- Search index và notification vẫn lưu trong memory; process mới rebuild từ event Kafka còn retention.
 - Kafka topic nghiệp vụ: `post-events`.
 
 Khi source, API, event, schema hoặc Compose thay đổi, cập nhật tài liệu tương ứng trong cùng pull request/commit.

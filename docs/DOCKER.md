@@ -36,6 +36,8 @@ flowchart LR
 
 Compose chờ healthcheck của PostgreSQL, Cassandra và Kafka; chờ `cassandra-init` hoàn tất; sau đó chờ User Service healthy trước khi khởi động Feed Service.
 
+Trong Compose network, `feed-service` cấu hình `USER_SERVICE_BASE_URL=http://user-service:8081`. Spring Cloud OpenFeign dùng URL này cho named client `user-service`; đây là giao tiếp nội bộ trực tiếp, không đi qua API Gateway. Connect/read timeout hiện đều là 5 giây theo `feed-service/src/main/resources/application.yaml`.
+
 ## 2. Yêu cầu Ubuntu
 
 - Docker Engine 20.10.4+.
@@ -304,3 +306,40 @@ df -h
 ```
 
 Không chạy `docker system prune --volumes` nếu chưa hiểu dữ liệu nào sẽ bị xóa.
+## Swagger UI aggregate
+
+Compose có thêm service `swagger-ui` ở host port `8090`. Sau khi toàn bộ application healthy, mở:
+
+```text
+http://localhost:8090/
+```
+
+Service `swagger-spec` chạy trước `swagger-ui`, lấy bốn `/v3/api-docs` rồi gộp thành một file `/out/openapi.json`; vì vậy toàn bộ endpoint hiển thị trên cùng một trang Swagger.
+
+Danh sách service phải bao gồm cả `notification-service` và `swagger-ui`:
+
+```bash
+docker compose config --services
+docker compose ps -a
+docker compose logs --tail=200 swagger-ui
+```
+
+Nếu dùng WSL, hãy chạy từ repository mới (`/mnt/d/devconnect-microservice-demo`) hoặc đồng bộ nội dung vào home bằng:
+
+```bash
+cp -r /mnt/d/devconnect-microservice-demo/. ~/devconnect-microservice-demo/
+```
+
+Compose dùng external network `devconnect-network`; tạo network một lần nếu chưa có:
+
+```bash
+docker network inspect devconnect-network >/dev/null 2>&1 || docker network create devconnect-network
+```
+
+Khi source hoặc Dockerfile vừa thay đổi, build lại không dùng cache:
+
+```bash
+docker compose down --remove-orphans
+docker compose build --no-cache
+docker compose up -d
+```
