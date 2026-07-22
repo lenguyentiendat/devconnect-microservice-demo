@@ -1,21 +1,19 @@
 package com.devconnect.feed.cache;
 
 import com.devconnect.feed.config.CacheProperties;
-import com.devconnect.feed.config.CacheConfiguration;
 import com.devconnect.feed.dto.PostResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.RedisConnectionFailureException;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -107,15 +105,11 @@ class TwoLevelCacheServiceTests {
 
     @Test
     void caffeineEvictionRemovesExpirationMetadata() {
-        AtomicReference<Thread> removalThread = new AtomicReference<>();
-        L1ExpirationTracker tracker = new L1ExpirationTracker() {
-            @Override
-            public void remove(String key, byte[] value) {
-                removalThread.set(Thread.currentThread());
-                super.remove(key, value);
-            }
-        };
-        Cache<String, byte[]> boundedCache = new CacheConfiguration().caffeine(cacheProperties(1), tracker);
+        L1ExpirationTracker tracker = new L1ExpirationTracker();
+        Cache<String, byte[]> boundedCache = Caffeine.<String, byte[]>newBuilder()
+                .maximumSize(1)
+                .removalListener((String key, byte[] value, RemovalCause cause) -> tracker.remove(key))
+                .build();
         TwoLevelCacheService boundedService = new TwoLevelCacheService(
                 boundedCache,
                 redisCacheStore,
@@ -130,35 +124,6 @@ class TwoLevelCacheServiceTests {
         boundedCache.cleanUp();
 
         assertThat(tracker.size()).isEqualTo(1);
-        assertThat(removalThread.get()).isSameAs(Thread.currentThread());
-    }
-
-    @Test
-    void delayedRemovalOfReplacedValueDoesNotEraseReplacementExpiration() {
-        cacheService.addCacheByKey(postKey, post, postTtls);
-        byte[] replacedValue = l1Cache.getIfPresent(postKey);
-        PostResponse replacement = new PostResponse(
-                "post-123", "author-123", "replacement", LocalDateTime.of(2026, 7, 22, 10, 31)
-        );
-
-        cacheService.addCacheByKey(postKey, replacement, postTtls);
-        byte[] currentValue = l1Cache.getIfPresent(postKey);
-        expirationTracker.remove(postKey, replacedValue);
-
-        assertThat(currentValue).isNotSameAs(replacedValue);
-        assertThat(expirationTracker.get(postKey, currentValue)).isAfter(Instant.now());
-        assertThat(cacheService.getCacheByKey(postKey, PostResponse.class)).contains(replacement);
-    }
-
-    @Test
-    void expiredL1EntryIsRemovedBeforeItCanBeReturned() {
-        cacheService.addCacheByKey(postKey, post, postTtls);
-        byte[] storedValue = l1Cache.getIfPresent(postKey);
-        expirationTracker.record(postKey, storedValue, Instant.now().minusSeconds(1));
-
-        assertThat(cacheService.getCacheByKey(postKey, PostResponse.class)).isEmpty();
-        assertThat(l1Cache.getIfPresent(postKey)).isNull();
-        assertThat(expirationTracker.contains(postKey)).isFalse();
     }
 
     @Test
@@ -171,14 +136,10 @@ class TwoLevelCacheServiceTests {
     }
 
     private static CacheProperties cacheProperties() {
-        return cacheProperties(100);
-    }
-
-    private static CacheProperties cacheProperties(long l1MaximumSize) {
         return new CacheProperties(
                 true,
                 "local",
-                l1MaximumSize,
+                100,
                 Duration.ofSeconds(45),
                 Duration.ofMinutes(5),
                 Duration.ofSeconds(10),

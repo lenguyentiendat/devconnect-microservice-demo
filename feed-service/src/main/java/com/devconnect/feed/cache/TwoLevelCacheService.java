@@ -76,9 +76,8 @@ public class TwoLevelCacheService implements CacheService {
     @Override
     public boolean evictCacheByExactKey(String key) {
         validateKey(key, "key");
-        byte[] removedValue = l1Cache.asMap().remove(key);
-        boolean removedFromL1 = removedValue != null;
-        l1ExpirationTracker.remove(key, removedValue);
+        boolean removedFromL1 = l1Cache.asMap().remove(key) != null;
+        l1ExpirationTracker.remove(key);
         try {
             return redisCacheStore.delete(key) || removedFromL1;
         } catch (RuntimeException exception) {
@@ -133,17 +132,18 @@ public class TwoLevelCacheService implements CacheService {
     private <T> Optional<T> readL1(String key, Class<T> valueType) {
         byte[] serialized = l1Cache.getIfPresent(key);
         if (serialized == null) {
+            l1ExpirationTracker.remove(key);
             return Optional.empty();
         }
-        Instant expiration = l1ExpirationTracker.get(key, serialized);
-        if (expiration == null || !expiration.isAfter(Instant.now())) {
-            removeL1(key, serialized);
+        Instant expiration = l1ExpirationTracker.get(key);
+        if (expiration != null && !expiration.isAfter(Instant.now())) {
+            removeL1(key);
             return Optional.empty();
         }
         try {
             return Optional.of(objectMapper.readValue(serialized.clone(), valueType));
         } catch (IOException exception) {
-            removeL1(key, serialized);
+            removeL1(key);
             recordSerializationError();
             return Optional.empty();
         }
@@ -175,26 +175,24 @@ public class TwoLevelCacheService implements CacheService {
     }
 
     private void storeL1(String key, byte[] serialized, Duration ttl) {
-        byte[] cacheValue = serialized.clone();
-        l1ExpirationTracker.record(key, cacheValue, Instant.now().plus(jitter(ttl)));
-        l1Cache.put(key, cacheValue);
+        l1ExpirationTracker.record(key, Instant.now().plus(jitter(ttl)));
+        l1Cache.put(key, serialized.clone());
     }
 
     private long removeL1Prefix(String prefix) {
         long removed = 0;
         for (String key : l1Cache.asMap().keySet()) {
-            byte[] removedValue = key.startsWith(prefix) ? l1Cache.asMap().remove(key) : null;
-            if (removedValue != null) {
-                l1ExpirationTracker.remove(key, removedValue);
+            if (key.startsWith(prefix) && l1Cache.asMap().remove(key) != null) {
+                l1ExpirationTracker.remove(key);
                 removed++;
             }
         }
         return removed;
     }
 
-    private void removeL1(String key, byte[] value) {
-        l1Cache.asMap().remove(key, value);
-        l1ExpirationTracker.remove(key, value);
+    private void removeL1(String key) {
+        l1Cache.invalidate(key);
+        l1ExpirationTracker.remove(key);
     }
 
     private Duration jitter(Duration ttl) {

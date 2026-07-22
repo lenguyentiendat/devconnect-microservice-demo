@@ -10,24 +10,19 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class L1ExpirationTracker {
 
-    private final ConcurrentHashMap<String, TrackedExpiration> expirations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Instant> expirations = new ConcurrentHashMap<>();
 
-    public void record(String key, byte[] value, Instant expiration) {
-        expirations.put(key, new TrackedExpiration(value, expiration));
+    public void record(String key, Instant expiration) {
+        expirations.put(key, expiration);
     }
 
-    public Instant get(String key, byte[] value) {
-        TrackedExpiration trackedExpiration = expirations.get(key);
-        return trackedExpiration != null && trackedExpiration.value() == value
-                ? trackedExpiration.expiration()
-                : null;
+    public Instant get(String key) {
+        return expirations.get(key);
     }
 
-    public void remove(String key, byte[] value) {
-        if (key != null && value != null) {
-            expirations.computeIfPresent(key, (ignored, trackedExpiration) ->
-                    trackedExpiration.value() == value ? null : trackedExpiration
-            );
+    public void remove(String key) {
+        if (key != null) {
+            expirations.remove(key);
         }
     }
 
@@ -37,8 +32,5 @@ public class L1ExpirationTracker {
 
     boolean contains(String key) {
         return expirations.containsKey(key);
-    }
-
-    private record TrackedExpiration(byte[] value, Instant expiration) {
     }
 }

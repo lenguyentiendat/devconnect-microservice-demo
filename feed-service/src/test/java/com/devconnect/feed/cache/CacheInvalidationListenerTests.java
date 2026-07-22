@@ -29,15 +29,12 @@ class CacheInvalidationListenerTests {
 
     @Test
     void listenerEvictsExactAndPagePrefixLocally() throws Exception {
-        byte[] exactValue = new byte[] {1};
-        byte[] pageValue = new byte[] {2};
-        byte[] unrelatedValue = new byte[] {3};
-        localCache.put("exact-post-key", exactValue);
-        localCache.put("page-prefix:first", pageValue);
-        localCache.put("unrelated-key", unrelatedValue);
-        expirationTracker.record("exact-post-key", exactValue, Instant.now());
-        expirationTracker.record("page-prefix:first", pageValue, Instant.now());
-        expirationTracker.record("unrelated-key", unrelatedValue, Instant.now());
+        localCache.put("exact-post-key", new byte[] {1});
+        localCache.put("page-prefix:first", new byte[] {2});
+        localCache.put("unrelated-key", new byte[] {3});
+        expirationTracker.record("exact-post-key", Instant.now());
+        expirationTracker.record("page-prefix:first", Instant.now());
+        expirationTracker.record("unrelated-key", Instant.now());
 
         listener.onMessage(json("exact-post-key", "page-prefix"));
 
