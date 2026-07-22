@@ -1,11 +1,11 @@
 package com.devconnect.feed.cache;
 
 import com.devconnect.feed.config.CacheProperties;
+import com.devconnect.feed.config.CacheConfiguration;
 import com.devconnect.feed.dto.PostResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.RemovalCause;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,12 +107,15 @@ class TwoLevelCacheServiceTests {
 
     @Test
     void caffeineEvictionRemovesExpirationMetadata() {
-        L1ExpirationTracker tracker = new L1ExpirationTracker();
-        Cache<String, byte[]> boundedCache = Caffeine.<String, byte[]>newBuilder()
-                .maximumSize(1)
-                .executor(Runnable::run)
-                .removalListener((String key, byte[] value, RemovalCause cause) -> tracker.remove(key, value))
-                .build();
+        AtomicReference<Thread> removalThread = new AtomicReference<>();
+        L1ExpirationTracker tracker = new L1ExpirationTracker() {
+            @Override
+            public void remove(String key, byte[] value) {
+                removalThread.set(Thread.currentThread());
+                super.remove(key, value);
+            }
+        };
+        Cache<String, byte[]> boundedCache = new CacheConfiguration().caffeine(cacheProperties(1), tracker);
         TwoLevelCacheService boundedService = new TwoLevelCacheService(
                 boundedCache,
                 redisCacheStore,
@@ -126,6 +130,7 @@ class TwoLevelCacheServiceTests {
         boundedCache.cleanUp();
 
         assertThat(tracker.size()).isEqualTo(1);
+        assertThat(removalThread.get()).isSameAs(Thread.currentThread());
     }
 
     @Test
@@ -166,10 +171,14 @@ class TwoLevelCacheServiceTests {
     }
 
     private static CacheProperties cacheProperties() {
+        return cacheProperties(100);
+    }
+
+    private static CacheProperties cacheProperties(long l1MaximumSize) {
         return new CacheProperties(
                 true,
                 "local",
-                100,
+                l1MaximumSize,
                 Duration.ofSeconds(45),
                 Duration.ofMinutes(5),
                 Duration.ofSeconds(10),
