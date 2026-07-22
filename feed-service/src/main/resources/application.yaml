@@ -12,6 +12,13 @@ spring:
   application:
     name: feed-service
 
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:500ms}
+      timeout: ${REDIS_COMMAND_TIMEOUT:500ms}
+
   cloud:
     openfeign:
       client:
@@ -45,6 +52,10 @@ services:
     base-url: ${USER_SERVICE_BASE_URL:http://localhost:8081}
 
 app:
+  cache:
+    enabled: ${CACHE_ENABLED:true}
+    environment: ${CACHE_ENVIRONMENT:local}
+    page-token-secret: ${CACHE_PAGE_TOKEN_SECRET:devconnect-local-page-token-secret}
   async:
     post:
       # Dedicated bounded pool for the blocking User Service call in create-post.
