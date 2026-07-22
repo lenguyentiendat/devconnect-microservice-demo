@@ -1,5 +1,11 @@
 package com.devconnect.feed.persistence;
 
+import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import com.datastax.oss.driver.api.core.cql.ResultSet;
+import com.datastax.oss.driver.api.core.cql.Row;
+import com.datastax.oss.driver.api.core.cql.SimpleStatement;
+import com.devconnect.feed.dto.FeedPage;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.persistence.entity.PostByFeedEntity;
 import com.devconnect.feed.persistence.entity.PostByFeedKey;
@@ -17,10 +23,13 @@ import org.springframework.data.cassandra.core.CassandraOperations;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.mockito.ArgumentCaptor;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.isA;
@@ -35,6 +44,9 @@ class CassandraPostStoreTests {
     private CassandraOperations cassandraOperations;
 
     @Mock
+    private CqlSession cqlSession;
+
+    @Mock
     private CassandraBatchOperations batchOperations;
 
     @Mock
@@ -43,6 +55,12 @@ class CassandraPostStoreTests {
     @Mock
     private PostByIdRepository postByIdRepository;
 
+    @Mock
+    private ResultSet resultSet;
+
+    @Mock
+    private ExecutionInfo executionInfo;
+
     private CassandraPostStore postStore;
 
     @BeforeEach
@@ -50,7 +68,8 @@ class CassandraPostStoreTests {
         postStore = new CassandraPostStore(
                 cassandraOperations,
                 postByFeedRepository,
-                postByIdRepository
+                postByIdRepository,
+                cqlSession
         );
     }
 
@@ -116,5 +135,42 @@ class CassandraPostStoreTests {
         List<PostResponse> result = postStore.findAll();
 
         assertEquals(List.of("Newest", "Older"), result.stream().map(PostResponse::content).toList());
+    }
+
+    @Test
+    void findPageBindsSizeAndIncomingPagingState() {
+        ByteBuffer incomingState = ByteBuffer.wrap(new byte[] {9});
+        when(cqlSession.execute(org.mockito.ArgumentMatchers.any(SimpleStatement.class))).thenReturn(resultSet);
+        when(resultSet.getAvailableWithoutFetching()).thenReturn(0);
+        when(resultSet.iterator()).thenReturn(Collections.emptyIterator());
+        when(resultSet.getExecutionInfo()).thenReturn(executionInfo);
+
+        postStore.findPage(20, incomingState);
+
+        ArgumentCaptor<SimpleStatement> statementCaptor = ArgumentCaptor.forClass(SimpleStatement.class);
+        verify(cqlSession).execute(statementCaptor.capture());
+        assertEquals(20, statementCaptor.getValue().getPageSize());
+        assertEquals(incomingState, statementCaptor.getValue().getPagingState());
+        assertEquals(List.of(CassandraPostStore.GLOBAL_FEED), statementCaptor.getValue().getPositionalValues());
+    }
+
+    @Test
+    void findPageMapsOnlyRowsAvailableInCurrentDriverPage() {
+        UUID postId = UUID.randomUUID();
+        Instant createdAt = Instant.parse("2026-07-14T08:30:00Z");
+        Row row = org.mockito.Mockito.mock(Row.class);
+        when(row.getUuid("post_id")).thenReturn(postId);
+        when(row.getString("author_id")).thenReturn("u001");
+        when(row.getString("content")).thenReturn("Cassandra");
+        when(row.getInstant("created_at")).thenReturn(createdAt);
+        when(cqlSession.execute(org.mockito.ArgumentMatchers.any(SimpleStatement.class))).thenReturn(resultSet);
+        when(resultSet.getAvailableWithoutFetching()).thenReturn(1);
+        when(resultSet.iterator()).thenReturn(List.of(row).iterator());
+        when(resultSet.getExecutionInfo()).thenReturn(executionInfo);
+
+        FeedPage page = postStore.findPage(20, null);
+
+        assertEquals(List.of("Cassandra"), page.items().stream().map(PostResponse::content).toList());
+        assertEquals(LocalDateTime.ofInstant(createdAt, ZoneOffset.UTC), page.items().getFirst().createdAt());
     }
 }
