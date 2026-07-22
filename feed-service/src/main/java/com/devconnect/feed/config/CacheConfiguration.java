@@ -42,7 +42,7 @@ public class CacheConfiguration {
     public Cache<String, byte[]> caffeine(CacheProperties properties, L1ExpirationTracker l1ExpirationTracker) {
         return Caffeine.<String, byte[]>newBuilder()
                 .maximumSize(properties.l1MaximumSize())
-                .removalListener((String key, byte[] value, RemovalCause cause) -> l1ExpirationTracker.remove(key, value))
+                .evictionListener((String key, byte[] value, RemovalCause cause) -> l1ExpirationTracker.remove(key, value))
                 .build();
     }
 
