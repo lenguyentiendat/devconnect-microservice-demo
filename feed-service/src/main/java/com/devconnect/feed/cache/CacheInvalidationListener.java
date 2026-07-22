@@ -49,8 +49,8 @@ public class CacheInvalidationListener implements MessageListener {
 
     private void invalidateExact(String key) {
         if (key != null && !key.isBlank()) {
-            localCache.invalidate(key);
-            l1ExpirationTracker.remove(key);
+            byte[] removedValue = localCache.asMap().remove(key);
+            l1ExpirationTracker.remove(key, removedValue);
         }
     }
 
@@ -60,8 +60,8 @@ public class CacheInvalidationListener implements MessageListener {
         }
         for (String key : localCache.asMap().keySet()) {
             if (key.startsWith(prefix)) {
-                localCache.invalidate(key);
-                l1ExpirationTracker.remove(key);
+                byte[] removedValue = localCache.asMap().remove(key);
+                l1ExpirationTracker.remove(key, removedValue);
             }
         }
     }
