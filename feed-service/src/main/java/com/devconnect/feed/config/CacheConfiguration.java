@@ -1,7 +1,10 @@
 package com.devconnect.feed.config;
 
 import com.devconnect.feed.cache.CacheService;
+import com.devconnect.feed.cache.CacheInvalidationListener;
+import com.devconnect.feed.cache.CacheInvalidationPublisher;
 import com.devconnect.feed.cache.CacheKeyFactory;
+import com.devconnect.feed.cache.FeedRevisionService;
 import com.devconnect.feed.cache.NoOpCacheService;
 import com.devconnect.feed.cache.RedisCacheStore;
 import com.devconnect.feed.cache.TwoLevelCacheService;
@@ -17,10 +20,16 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Configuration
 @EnableConfigurationProperties(CacheProperties.class)
 public class CacheConfiguration {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(CacheConfiguration.class);
 
     @Bean
     public Cache<String, byte[]> caffeine(CacheProperties properties) {
@@ -49,6 +58,54 @@ public class CacheConfiguration {
     @Bean
     public CacheKeyFactory cacheKeyFactory(CacheProperties properties) {
         return new CacheKeyFactory(properties);
+    }
+
+    @Bean
+    public FeedRevisionService feedRevisionService(
+            RedisCacheStore redisCacheStore,
+            CacheKeyFactory cacheKeyFactory,
+            MeterRegistry meterRegistry
+    ) {
+        return new FeedRevisionService(redisCacheStore, cacheKeyFactory, meterRegistry);
+    }
+
+    @Bean
+    public CacheInvalidationPublisher cacheInvalidationPublisher(
+            RedisCacheStore redisCacheStore,
+            ObjectMapper objectMapper,
+            CacheProperties properties,
+            MeterRegistry meterRegistry
+    ) {
+        return new CacheInvalidationPublisher(redisCacheStore, objectMapper, properties, meterRegistry);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "app.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public CacheInvalidationListener cacheInvalidationListener(
+            Cache<String, byte[]> caffeine,
+            ObjectMapper objectMapper,
+            MeterRegistry meterRegistry
+    ) {
+        return new CacheInvalidationListener(caffeine, objectMapper, meterRegistry);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "app.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisMessageListenerContainer cacheInvalidationListenerContainer(
+            RedisConnectionFactory connectionFactory,
+            CacheInvalidationListener cacheInvalidationListener,
+            CacheProperties properties,
+            MeterRegistry meterRegistry
+    ) {
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        container.setConnectionFactory(connectionFactory);
+        container.addMessageListener(cacheInvalidationListener, new ChannelTopic(properties.invalidationChannel()));
+        container.setRecoveryInterval(5_000L);
+        container.setErrorHandler(exception -> {
+            meterRegistry.counter("feed.cache.redis.errors").increment();
+            LOGGER.warn("Cache invalidation listener operation failed: {}", exception.getClass().getSimpleName());
+        });
+        return container;
     }
 
     @Bean
