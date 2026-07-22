@@ -1,0 +1,103 @@
+server:
+  port: ${API_GATEWAY_PORT:8090}
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false
+          routes:
+            - id: user-service
+              uri: lb://user-service
+              predicates:
+                - Path=/api/users,/api/users/**
+            - id: user-service-internal
+              uri: lb://user-service
+              predicates:
+                - Path=/internal/users/**
+            - id: feed-service
+              uri: lb://feed-service
+              predicates:
+                - Path=/api/feed/posts,/api/feed/posts/**
+            - id: search-service
+              uri: lb://search-service
+              predicates:
+                - Path=/api/search,/api/search/**
+            - id: notification-service
+              uri: lb://notification-service
+              predicates:
+                - Path=/api/notifications,/api/notifications/**
+            - id: user-service-openapi
+              uri: lb://user-service
+              predicates:
+                - Path=/openapi/user/v3/api-docs
+              filters:
+                - SetPath=/v3/api-docs
+            - id: feed-service-openapi
+              uri: lb://feed-service
+              predicates:
+                - Path=/openapi/feed/v3/api-docs
+              filters:
+                - SetPath=/v3/api-docs
+            - id: search-service-openapi
+              uri: lb://search-service
+              predicates:
+                - Path=/openapi/search/v3/api-docs
+              filters:
+                - SetPath=/v3/api-docs
+            - id: notification-service-openapi
+              uri: lb://notification-service
+              predicates:
+                - Path=/openapi/notification/v3/api-docs
+              filters:
+                - SetPath=/v3/api-docs
+          globalcors:
+            add-to-simple-url-handler-mapping: true
+            cors-configurations:
+              '[/**]':
+                allowedOrigins:
+                  - ${GATEWAY_ALLOWED_ORIGIN:http://localhost:8090}
+                allowedMethods:
+                  - GET
+                  - POST
+                  - PUT
+                  - PATCH
+                  - DELETE
+                  - OPTIONS
+                allowedHeaders:
+                  - Content-Type
+                  - Authorization
+                  - Accept
+                  - Origin
+                allowCredentials: true
+                maxAge: 3600
+          httpclient:
+            connect-timeout: ${GATEWAY_CONNECT_TIMEOUT_MS:5000}
+            response-timeout: ${GATEWAY_RESPONSE_TIMEOUT:10s}
+
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: true
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    disable-swagger-default-url: true
+    url: /v3/api-docs/aggregate
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never

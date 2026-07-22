@@ -24,6 +24,29 @@ spring:
         spring.json.use.type.headers: false
 
 app:
+  openapi:
+    server-url: ${OPENAPI_SERVER_URL:http://localhost:8090}
   kafka:
     topics:
       post-events: post-events
+
+eureka:
+  client:
+    fetch-registry: false
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+    healthcheck:
+      enabled: true
+  instance:
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS:false}
+    health-check-url-path: /actuator/health
+    status-page-url-path: /actuator/info
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never

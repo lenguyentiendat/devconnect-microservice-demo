@@ -9,6 +9,8 @@ COPY user-service/pom.xml ./user-service/pom.xml
 COPY feed-service/pom.xml ./feed-service/pom.xml
 COPY search-service/pom.xml ./search-service/pom.xml
 COPY notification-service/pom.xml ./notification-service/pom.xml
+COPY discovery-server/pom.xml ./discovery-server/pom.xml
+COPY api-gateway/pom.xml ./api-gateway/pom.xml
 
 RUN mvn -B -ntp -pl search-service -am dependency:go-offline
 

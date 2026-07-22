@@ -12,7 +12,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
+@SpringBootTest(properties = {
+        "app.openapi.server-url=https://gateway.test",
+        "eureka.client.enabled=false",
+        "spring.kafka.listener.auto-startup=false"
+})
 @AutoConfigureMockMvc
 class SearchOpenApiTests {
 
@@ -26,6 +30,8 @@ class SearchOpenApiTests {
     void publishesSearchPathInOpenApiDocument() throws Exception {
         mockMvc.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.paths['/api/search/posts']").exists());
+                .andExpect(jsonPath("$.paths['/api/search/posts']").exists())
+                .andExpect(jsonPath("$.servers.length()").value(1))
+                .andExpect(jsonPath("$.servers[0].url").value("https://gateway.test"));
     }
 }

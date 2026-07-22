@@ -14,3 +14,11 @@ spring:
     enabled: true
     placeholders:
       emailGeneratedStorage: ""
+
+eureka:
+  client:
+    enabled: false
+
+app:
+  openapi:
+    server-url: http://localhost:8090

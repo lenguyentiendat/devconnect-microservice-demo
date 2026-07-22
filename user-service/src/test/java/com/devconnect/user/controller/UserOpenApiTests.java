@@ -12,7 +12,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
+@SpringBootTest(properties = "app.openapi.server-url=https://gateway.test")
 @AutoConfigureMockMvc
 class UserOpenApiTests {
 
@@ -28,6 +28,8 @@ class UserOpenApiTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paths['/api/users']").exists())
                 .andExpect(jsonPath("$.paths['/api/users/{userId}']").exists())
-                .andExpect(jsonPath("$.paths['/internal/users/{userId}/status']").exists());
+                .andExpect(jsonPath("$.paths['/internal/users/{userId}/status']").exists())
+                .andExpect(jsonPath("$.servers.length()").value(1))
+                .andExpect(jsonPath("$.servers[0].url").value("https://gateway.test"));
     }
 }

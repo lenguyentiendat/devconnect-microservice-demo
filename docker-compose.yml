@@ -16,6 +16,21 @@ services:
       timeout: 5s
       retries: 10
 
+  pgadmin:
+    image: dpage/pgadmin4:9.16
+    container_name: devconnect-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@devconnect.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-devconnect}
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   cassandra:
     image: cassandra:5.0.8
     container_name: devconnect-cassandra
@@ -36,6 +51,19 @@ services:
       retries: 30
       start_period: 30s
 
+  cassandra-web:
+    image: ipushc/cassandra-web
+    container_name: devconnect-cassandra-web
+    ports:
+      - "3001:8083"
+    environment:
+      CASSANDRA_HOST: cassandra
+      CASSANDRA_PORT: 9042
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    restart: unless-stopped
+
   cassandra-init:
     image: cassandra:5.0.8
     container_name: devconnect-cassandra-init
@@ -48,6 +76,16 @@ services:
       - |
         cqlsh cassandra 9042 -e "CREATE KEYSPACE IF NOT EXISTS devconnect_feed WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1};"
     restart: "no"
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: devconnect-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   kafka:
     image: apache/kafka:4.1.2
@@ -88,6 +126,23 @@ services:
       KAFKA_CLUSTERS_0_NAME: devconnect-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
+  discovery-server:
+    build:
+      context: .
+      dockerfile: discovery-server/Dockerfile
+    image: devconnect/discovery-server:local
+    container_name: devconnect-discovery-server
+    init: true
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8761'"]
+      interval: 10s
+      timeout: 3s
+      retries: 15
+      start_period: 20s
+    restart: unless-stopped
+
   user-service:
     build:
       context: .
@@ -95,15 +150,20 @@ services:
     image: devconnect/user-service:local
     container_name: devconnect-user-service
     init: true
-    ports:
-      - "3000:8081"
+    expose:
+      - "8081"
     depends_on:
+      discovery-server:
+        condition: service_healthy
       postgres:
         condition: service_healthy
     environment:
       POSTGRES_URL: jdbc:postgresql://postgres:5432/devconnect_users
       POSTGRES_USERNAME: devconnect
       POSTGRES_PASSWORD: devconnect
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP_ADDRESS: "true"
+      OPENAPI_SERVER_URL: http://localhost:8090
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081'"]
       interval: 10s
@@ -119,12 +179,16 @@ services:
     image: devconnect/feed-service:local
     container_name: devconnect-feed-service
     init: true
-    ports:
-      - "8082:8082"
+    expose:
+      - "8082"
     depends_on:
+      discovery-server:
+        condition: service_healthy
       cassandra-init:
         condition: service_completed_successfully
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       user-service:
         condition: service_healthy
@@ -133,7 +197,13 @@ services:
       CASSANDRA_LOCAL_DATACENTER: datacenter1
       CASSANDRA_KEYSPACE: devconnect_feed
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      USER_SERVICE_BASE_URL: http://user-service:8081
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_ENVIRONMENT: local
+      CACHE_PAGE_TOKEN_SECRET: devconnect-local-page-token-secret
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP_ADDRESS: "true"
+      OPENAPI_SERVER_URL: http://localhost:8090
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082'"]
       interval: 10s
@@ -150,13 +220,18 @@ services:
     image: devconnect/search-service:local
     container_name: devconnect-search-service
     init: true
-    ports:
-      - "8083:8083"
+    expose:
+      - "8083"
     depends_on:
+      discovery-server:
+        condition: service_healthy
       kafka:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP_ADDRESS: "true"
+      OPENAPI_SERVER_URL: http://localhost:8090
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8083'"]
       interval: 10s
@@ -172,13 +247,18 @@ services:
     image: devconnect/notification-service:local
     container_name: devconnect-notification-service
     init: true
-    ports:
-      - "8084:8084"
+    expose:
+      - "8084"
     depends_on:
+      discovery-server:
+        condition: service_healthy
       kafka:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka/
+      EUREKA_PREFER_IP_ADDRESS: "true"
+      OPENAPI_SERVER_URL: http://localhost:8090
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8084'"]
       interval: 10s
@@ -187,14 +267,21 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  swagger-spec:
-    image: python:3.12-alpine
-    container_name: devconnect-swagger-spec
-    command: ["python", "/tools/aggregate_openapi.py"]
-    volumes:
-      - ./tools/aggregate_openapi.py:/tools/aggregate_openapi.py:ro
-      - swagger-spec:/out
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    image: devconnect/api-gateway:local
+    container_name: devconnect-api-gateway
+    init: true
+    ports:
+      - "8090:8090"
+    environment:
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka/
+      GATEWAY_ALLOWED_ORIGIN: http://localhost:8090
     depends_on:
+      discovery-server:
+        condition: service_healthy
       user-service:
         condition: service_healthy
       feed-service:
@@ -203,24 +290,18 @@ services:
         condition: service_healthy
       notification-service:
         condition: service_healthy
-
-  swagger-ui:
-    image: swaggerapi/swagger-ui:v5.21.0
-    container_name: devconnect-swagger-ui
-    ports:
-      - "8090:8080"
-    environment:
-      SWAGGER_JSON: /out/openapi.json
-    volumes:
-      - swagger-spec:/out:ro
-    depends_on:
-      swagger-spec:
-        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8090'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
 
 volumes:
   postgres-data:
   cassandra-data:
-  swagger-spec:
+  pgadmin-data:
 
 networks:
   default:
