@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.RedisConnectionFailureException;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -108,7 +109,8 @@ class TwoLevelCacheServiceTests {
         L1ExpirationTracker tracker = new L1ExpirationTracker();
         Cache<String, byte[]> boundedCache = Caffeine.<String, byte[]>newBuilder()
                 .maximumSize(1)
-                .removalListener((String key, byte[] value, RemovalCause cause) -> tracker.remove(key))
+                .executor(Runnable::run)
+                .removalListener((String key, byte[] value, RemovalCause cause) -> tracker.remove(key, value))
                 .build();
         TwoLevelCacheService boundedService = new TwoLevelCacheService(
                 boundedCache,
@@ -124,6 +126,34 @@ class TwoLevelCacheServiceTests {
         boundedCache.cleanUp();
 
         assertThat(tracker.size()).isEqualTo(1);
+    }
+
+    @Test
+    void delayedRemovalOfReplacedValueDoesNotEraseReplacementExpiration() {
+        cacheService.addCacheByKey(postKey, post, postTtls);
+        byte[] replacedValue = l1Cache.getIfPresent(postKey);
+        PostResponse replacement = new PostResponse(
+                "post-123", "author-123", "replacement", LocalDateTime.of(2026, 7, 22, 10, 31)
+        );
+
+        cacheService.addCacheByKey(postKey, replacement, postTtls);
+        byte[] currentValue = l1Cache.getIfPresent(postKey);
+        expirationTracker.remove(postKey, replacedValue);
+
+        assertThat(currentValue).isNotSameAs(replacedValue);
+        assertThat(expirationTracker.get(postKey, currentValue)).isAfter(Instant.now());
+        assertThat(cacheService.getCacheByKey(postKey, PostResponse.class)).contains(replacement);
+    }
+
+    @Test
+    void expiredL1EntryIsRemovedBeforeItCanBeReturned() {
+        cacheService.addCacheByKey(postKey, post, postTtls);
+        byte[] storedValue = l1Cache.getIfPresent(postKey);
+        expirationTracker.record(postKey, storedValue, Instant.now().minusSeconds(1));
+
+        assertThat(cacheService.getCacheByKey(postKey, PostResponse.class)).isEmpty();
+        assertThat(l1Cache.getIfPresent(postKey)).isNull();
+        assertThat(expirationTracker.contains(postKey)).isFalse();
     }
 
     @Test
