@@ -176,6 +176,51 @@ class FeedServiceCacheTests {
         verify(postEventPublisher).publishPostCreated(any());
     }
 
+    @Test
+    void createPostEvictsLocalPagesWhenRevisionAdvanceIsUnavailable() {
+        when(userServiceAdapter.getUserStatus("user-123"))
+                .thenReturn(new UserStatusResponse("user-123", "ACTIVE"));
+        when(revisions.advance(GLOBAL_FEED)).thenReturn(0L);
+
+        feedService.createPost(new CreatePostRequest("user-123", "Created post"));
+
+        verify(cacheService).evictPrefixKey(cacheKeys.feedPagePrefix(GLOBAL_FEED));
+        verify(invalidationPublisher, never()).publish(any());
+    }
+
+    @Test
+    void blankFirstPageTokenUsesTheFirstPageCacheKeyAndLoader() {
+        when(revisions.current(GLOBAL_FEED)).thenReturn(7L);
+        when(cacheService.getOrLoad(any(), eq(FeedPageResponse.class), any(), any()))
+                .thenAnswer(invocation -> invocation.<Supplier<FeedPageResponse>>getArgument(3).get());
+        when(postStore.findPage(eq(20), isNull()))
+                .thenReturn(new FeedPage(List.of(post), null));
+
+        feedService.getPosts(1, 20, "  ");
+
+        verify(cacheService).getOrLoad(
+                eq(cacheKeys.feedPage(GLOBAL_FEED, 7L, 20, null)),
+                eq(FeedPageResponse.class),
+                any(),
+                any()
+        );
+        verify(postStore).findPage(eq(20), isNull());
+    }
+
+    @Test
+    void cachedPageIsReturnedWithTheRequestedPageNumber() {
+        String token = new PageTokenCodec("test-page-token-secret")
+                .encode(ByteBuffer.wrap(new byte[]{1}));
+        when(revisions.current(GLOBAL_FEED)).thenReturn(7L);
+        when(cacheService.getOrLoad(any(), eq(FeedPageResponse.class), any(), any()))
+                .thenReturn(new FeedPageResponse(List.of(post), 1, 20, false, null, 7L));
+
+        FeedPageResponse page = feedService.getPosts(2, 20, token);
+
+        assertThat(page.pageNum()).isEqualTo(2);
+        verify(postStore, never()).findPage(any(Integer.class), any());
+    }
+
     private static CacheProperties cacheProperties() {
         return new CacheProperties(
                 true,

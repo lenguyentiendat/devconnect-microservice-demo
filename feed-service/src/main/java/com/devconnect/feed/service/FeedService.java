@@ -194,19 +194,25 @@ public class FeedService {
     }
 
     public FeedPageResponse getPosts(int pageNum, int pageSize, String pageToken) {
-        validatePageRequest(pageNum, pageSize, pageToken);
+        String normalizedPageToken = normalizePageToken(pageToken);
+        validatePageRequest(pageNum, pageSize, normalizedPageToken);
 
         long revision = feedRevisionService.current(GLOBAL_FEED);
         if (revision <= 0) {
-            return loadPage(pageNum, pageSize, pageToken, 0L);
+            return loadPage(pageNum, pageSize, normalizedPageToken, 0L);
         }
 
-        return cacheService.getOrLoad(
-                cacheKeyFactory.feedPage(GLOBAL_FEED, revision, pageSize, pageToken),
+        FeedPageResponse cachedPage = cacheService.getOrLoad(
+                cacheKeyFactory.feedPage(GLOBAL_FEED, revision, pageSize, normalizedPageToken),
                 FeedPageResponse.class,
                 cacheProperties.pageTtls(),
-                () -> loadPage(pageNum, pageSize, pageToken, revision)
+                () -> loadPage(pageNum, pageSize, normalizedPageToken, revision)
         );
+        return withRequestMetadata(cachedPage, pageNum, pageSize, revision);
+    }
+
+    private String normalizePageToken(String pageToken) {
+        return pageToken == null || pageToken.isBlank() ? null : pageToken;
     }
 
     private void validatePageRequest(int pageNum, int pageSize, String pageToken) {
@@ -239,13 +245,29 @@ public class FeedService {
         );
     }
 
+    private FeedPageResponse withRequestMetadata(
+            FeedPageResponse page,
+            int pageNum,
+            int pageSize,
+            long revision
+    ) {
+        return new FeedPageResponse(
+                page.items(),
+                pageNum,
+                pageSize,
+                page.hasNext(),
+                page.nextPageToken(),
+                revision
+        );
+    }
+
     private void invalidatePostWrite(PostResponse post) {
         String postKey = cacheKeyFactory.post(post.postId());
         String pagePrefix = cacheKeyFactory.feedPagePrefix(GLOBAL_FEED);
         long revision = advanceRevision();
 
+        runCacheOperation("page eviction", () -> cacheService.evictPrefixKey(pagePrefix));
         if (revision > 0) {
-            runCacheOperation("page eviction", () -> cacheService.evictPrefixKey(pagePrefix));
             runCacheOperation(
                     "invalidation publication",
                     () -> invalidationPublisher.publish(new CacheInvalidation(postKey, pagePrefix))
