@@ -180,13 +180,20 @@ public class FeedService {
     }
 
     public PostResponse getPostById(String postId) {
+        if (!cacheProperties.enabled()) {
+            return loadPost(postId);
+        }
         return cacheService.getOrLoad(
                 cacheKeyFactory.post(postId),
                 PostResponse.class,
                 cacheProperties.postTtls(),
-                () -> postStore.findById(postId)
-                        .orElseThrow(() -> new BusinessException("Post not found"))
+                () -> loadPost(postId)
         );
+    }
+
+    private PostResponse loadPost(String postId) {
+        return postStore.findById(postId)
+                .orElseThrow(() -> new BusinessException("Post not found"));
     }
 
     public List<PostResponse> getPosts() {
@@ -196,17 +203,22 @@ public class FeedService {
     public FeedPageResponse getPosts(int pageNum, int pageSize, String pageToken) {
         String normalizedPageToken = normalizePageToken(pageToken);
         validatePageRequest(pageNum, pageSize, normalizedPageToken);
+        ByteBuffer pagingState = decodePageToken(normalizedPageToken);
+
+        if (!cacheProperties.enabled()) {
+            return loadPage(pageNum, pageSize, pagingState, 0L);
+        }
 
         long revision = feedRevisionService.current(GLOBAL_FEED);
         if (revision <= 0) {
-            return loadPage(pageNum, pageSize, normalizedPageToken, 0L);
+            return loadPage(pageNum, pageSize, pagingState, 0L);
         }
 
         FeedPageResponse cachedPage = cacheService.getOrLoad(
                 cacheKeyFactory.feedPage(GLOBAL_FEED, revision, pageSize, normalizedPageToken),
                 FeedPageResponse.class,
                 cacheProperties.pageTtls(),
-                () -> loadPage(pageNum, pageSize, normalizedPageToken, revision)
+                () -> loadPage(pageNum, pageSize, pagingState, revision)
         );
         return withRequestMetadata(cachedPage, pageNum, pageSize, revision);
     }
@@ -229,8 +241,18 @@ public class FeedService {
         }
     }
 
-    private FeedPageResponse loadPage(int pageNum, int pageSize, String pageToken, long revision) {
-        ByteBuffer pagingState = pageToken == null ? null : pageTokenCodec.decode(pageToken);
+    private ByteBuffer decodePageToken(String pageToken) {
+        if (pageToken == null) {
+            return null;
+        }
+        try {
+            return pageTokenCodec.decode(pageToken);
+        } catch (IllegalArgumentException exception) {
+            throw new BusinessException("Invalid page token");
+        }
+    }
+
+    private FeedPageResponse loadPage(int pageNum, int pageSize, ByteBuffer pagingState, long revision) {
         FeedPage page = postStore.findPage(pageSize, pagingState);
         String nextPageToken = page.nextPagingState() == null
                 ? null
@@ -262,11 +284,14 @@ public class FeedService {
     }
 
     private void invalidatePostWrite(PostResponse post) {
+        if (!cacheProperties.enabled()) {
+            return;
+        }
         String postKey = cacheKeyFactory.post(post.postId());
         String pagePrefix = cacheKeyFactory.feedPagePrefix(GLOBAL_FEED);
         long revision = advanceRevision();
 
-        runCacheOperation("page eviction", () -> cacheService.evictPrefixKey(pagePrefix));
+        runCacheOperation("local page eviction", () -> cacheService.evictLocalPrefix(pagePrefix));
         if (revision > 0) {
             runCacheOperation(
                     "invalidation publication",

@@ -5,6 +5,7 @@ import com.devconnect.feed.dto.PostResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,7 @@ class TwoLevelCacheServiceTests {
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private final Cache<String, byte[]> l1Cache = Caffeine.newBuilder().build();
+    private final L1ExpirationTracker expirationTracker = new L1ExpirationTracker();
     private final RedisCacheStore redisCacheStore = mock(RedisCacheStore.class);
     private final Supplier<PostResponse> loader = mock(Supplier.class);
     private final CacheTtls postTtls = new CacheTtls(Duration.ofSeconds(45), Duration.ofMinutes(5));
@@ -44,7 +46,8 @@ class TwoLevelCacheServiceTests {
                 redisCacheStore,
                 objectMapper,
                 cacheProperties(),
-                new SimpleMeterRegistry()
+                new SimpleMeterRegistry(),
+                expirationTracker
         );
     }
 
@@ -98,6 +101,38 @@ class TwoLevelCacheServiceTests {
 
         verify(redisCacheStore).delete(postKey);
         verify(loader).get();
+    }
+
+    @Test
+    void caffeineEvictionRemovesExpirationMetadata() {
+        L1ExpirationTracker tracker = new L1ExpirationTracker();
+        Cache<String, byte[]> boundedCache = Caffeine.<String, byte[]>newBuilder()
+                .maximumSize(1)
+                .removalListener((String key, byte[] value, RemovalCause cause) -> tracker.remove(key))
+                .build();
+        TwoLevelCacheService boundedService = new TwoLevelCacheService(
+                boundedCache,
+                redisCacheStore,
+                objectMapper,
+                cacheProperties(),
+                new SimpleMeterRegistry(),
+                tracker
+        );
+
+        boundedService.addCacheByKey(postKey, post, postTtls);
+        boundedService.addCacheByKey(postKey + "-other", post, postTtls);
+        boundedCache.cleanUp();
+
+        assertThat(tracker.size()).isEqualTo(1);
+    }
+
+    @Test
+    void localPrefixEvictionDoesNotScanRedis() {
+        cacheService.addCacheByKey(postKey, post, postTtls);
+
+        assertThat(cacheService.evictLocalPrefix("devconnect:local:feed:v1:post:")).isEqualTo(1);
+
+        verify(redisCacheStore, never()).scanDelete("devconnect:local:feed:v1:post:");
     }
 
     private static CacheProperties cacheProperties() {

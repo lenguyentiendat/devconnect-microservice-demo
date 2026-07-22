@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -17,12 +18,13 @@ class CacheInvalidationListenerTests {
     private final Cache<String, byte[]> localCache = Caffeine.newBuilder().build();
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    private final L1ExpirationTracker expirationTracker = new L1ExpirationTracker();
 
     private CacheInvalidationListener listener;
 
     @BeforeEach
     void setUp() {
-        listener = new CacheInvalidationListener(localCache, objectMapper, meterRegistry);
+        listener = new CacheInvalidationListener(localCache, objectMapper, meterRegistry, expirationTracker);
     }
 
     @Test
@@ -30,12 +32,18 @@ class CacheInvalidationListenerTests {
         localCache.put("exact-post-key", new byte[] {1});
         localCache.put("page-prefix:first", new byte[] {2});
         localCache.put("unrelated-key", new byte[] {3});
+        expirationTracker.record("exact-post-key", Instant.now());
+        expirationTracker.record("page-prefix:first", Instant.now());
+        expirationTracker.record("unrelated-key", Instant.now());
 
         listener.onMessage(json("exact-post-key", "page-prefix"));
 
         assertThat(localCache.getIfPresent("exact-post-key")).isNull();
         assertThat(localCache.getIfPresent("page-prefix:first")).isNull();
         assertThat(localCache.getIfPresent("unrelated-key")).isNotNull();
+        assertThat(expirationTracker.contains("exact-post-key")).isFalse();
+        assertThat(expirationTracker.contains("page-prefix:first")).isFalse();
+        assertThat(expirationTracker.contains("unrelated-key")).isTrue();
         assertThat(meterRegistry.counter("feed.cache.invalidation.received").count()).isEqualTo(1.0);
     }
 

@@ -5,11 +5,13 @@ import com.devconnect.feed.cache.CacheInvalidationListener;
 import com.devconnect.feed.cache.CacheInvalidationPublisher;
 import com.devconnect.feed.cache.CacheKeyFactory;
 import com.devconnect.feed.cache.FeedRevisionService;
+import com.devconnect.feed.cache.L1ExpirationTracker;
 import com.devconnect.feed.cache.NoOpCacheService;
 import com.devconnect.feed.cache.RedisCacheStore;
 import com.devconnect.feed.cache.TwoLevelCacheService;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,10 +34,16 @@ public class CacheConfiguration {
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheConfiguration.class);
 
     @Bean
-    public Cache<String, byte[]> caffeine(CacheProperties properties) {
-        return Caffeine.newBuilder()
+    public L1ExpirationTracker l1ExpirationTracker() {
+        return new L1ExpirationTracker();
+    }
+
+    @Bean
+    public Cache<String, byte[]> caffeine(CacheProperties properties, L1ExpirationTracker l1ExpirationTracker) {
+        return Caffeine.<String, byte[]>newBuilder()
                 .maximumSize(properties.l1MaximumSize())
-                .<String, byte[]>build();
+                .removalListener((String key, byte[] value, RemovalCause cause) -> l1ExpirationTracker.remove(key))
+                .build();
     }
 
     @Bean
@@ -84,9 +92,10 @@ public class CacheConfiguration {
     public CacheInvalidationListener cacheInvalidationListener(
             Cache<String, byte[]> caffeine,
             ObjectMapper objectMapper,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            L1ExpirationTracker l1ExpirationTracker
     ) {
-        return new CacheInvalidationListener(caffeine, objectMapper, meterRegistry);
+        return new CacheInvalidationListener(caffeine, objectMapper, meterRegistry, l1ExpirationTracker);
     }
 
     @Bean
@@ -115,9 +124,12 @@ public class CacheConfiguration {
             RedisCacheStore redisCacheStore,
             ObjectMapper objectMapper,
             CacheProperties properties,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            L1ExpirationTracker l1ExpirationTracker
     ) {
-        return new TwoLevelCacheService(caffeine, redisCacheStore, objectMapper, properties, meterRegistry);
+        return new TwoLevelCacheService(
+                caffeine, redisCacheStore, objectMapper, properties, meterRegistry, l1ExpirationTracker
+        );
     }
 
     @Bean

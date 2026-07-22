@@ -15,5 +15,7 @@ public interface CacheService {
 
     long evictPrefixKey(String prefix);
 
+    long evictLocalPrefix(String prefix);
+
     <T> T getOrLoad(String key, Class<T> valueType, CacheTtls ttls, Supplier<T> loader);
 }

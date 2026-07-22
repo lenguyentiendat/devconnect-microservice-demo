@@ -36,6 +36,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.inOrder;
 
@@ -145,7 +146,7 @@ class FeedServiceCacheTests {
     }
 
     @Test
-    void createPostInvalidatesBeforePublishingKafkaAndCachesExactPost() {
+    void createPostEvictsOnlyLocalPagesBeforePublishingKafkaAndCachesExactPost() {
         when(userServiceAdapter.getUserStatus("user-123"))
                 .thenReturn(new UserStatusResponse("user-123", "ACTIVE"));
         when(revisions.advance(GLOBAL_FEED)).thenReturn(8L);
@@ -156,7 +157,7 @@ class FeedServiceCacheTests {
         String pagePrefix = cacheKeys.feedPagePrefix(GLOBAL_FEED);
         InOrder ordered = inOrder(revisions, cacheService, invalidationPublisher, postEventPublisher);
         ordered.verify(revisions).advance(GLOBAL_FEED);
-        ordered.verify(cacheService).evictPrefixKey(pagePrefix);
+        ordered.verify(cacheService).evictLocalPrefix(pagePrefix);
         ordered.verify(invalidationPublisher).publish(new CacheInvalidation(exactKey, pagePrefix));
         ordered.verify(cacheService).addCacheByKey(eq(exactKey), eq(created), any());
         ordered.verify(postEventPublisher).publishPostCreated(any());
@@ -184,8 +185,45 @@ class FeedServiceCacheTests {
 
         feedService.createPost(new CreatePostRequest("user-123", "Created post"));
 
-        verify(cacheService).evictPrefixKey(cacheKeys.feedPagePrefix(GLOBAL_FEED));
+        verify(cacheService).evictLocalPrefix(cacheKeys.feedPagePrefix(GLOBAL_FEED));
         verify(invalidationPublisher, never()).publish(any());
+    }
+
+    @Test
+    void disabledCacheBypassesRevisionPublicationAndAllCacheOperations() {
+        properties = cacheProperties(false);
+        cacheKeys = new CacheKeyFactory(properties);
+        feedService = new FeedService(
+                userServiceAdapter,
+                postEventPublisher,
+                postStore,
+                Runnable::run,
+                cacheService,
+                cacheKeys,
+                properties,
+                revisions,
+                invalidationPublisher,
+                new PageTokenCodec("test-page-token-secret")
+        );
+        when(postStore.findById(postId)).thenReturn(Optional.of(post));
+        when(postStore.findPage(eq(20), isNull())).thenReturn(new FeedPage(List.of(post), null));
+        when(userServiceAdapter.getUserStatus("user-123"))
+                .thenReturn(new UserStatusResponse("user-123", "ACTIVE"));
+
+        assertThat(feedService.getPostById(postId)).isEqualTo(post);
+        assertThat(feedService.getPosts(1, 20, null).feedRevision()).isZero();
+        assertThat(feedService.createPost(new CreatePostRequest("user-123", "Created post"))).isNotNull();
+
+        verifyNoInteractions(cacheService, revisions, invalidationPublisher);
+    }
+
+    @Test
+    void invalidPageTokenIsRejectedBeforeCacheOrRevisionAccess() {
+        assertThatThrownBy(() -> feedService.getPosts(2, 20, "tampered"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Invalid page token");
+
+        verifyNoInteractions(cacheService, revisions);
     }
 
     @Test
@@ -222,8 +260,12 @@ class FeedServiceCacheTests {
     }
 
     private static CacheProperties cacheProperties() {
+        return cacheProperties(true);
+    }
+
+    private static CacheProperties cacheProperties(boolean enabled) {
         return new CacheProperties(
-                true,
+                enabled,
                 "local",
                 100,
                 Duration.ofSeconds(45),

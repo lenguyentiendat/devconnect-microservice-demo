@@ -17,15 +17,18 @@ public class CacheInvalidationListener implements MessageListener {
     private final Cache<String, byte[]> localCache;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
+    private final L1ExpirationTracker l1ExpirationTracker;
 
     public CacheInvalidationListener(
             Cache<String, byte[]> localCache,
             ObjectMapper objectMapper,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            L1ExpirationTracker l1ExpirationTracker
     ) {
         this.localCache = Objects.requireNonNull(localCache, "localCache must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
+        this.l1ExpirationTracker = Objects.requireNonNull(l1ExpirationTracker, "l1ExpirationTracker must not be null");
     }
 
     @Override
@@ -47,6 +50,7 @@ public class CacheInvalidationListener implements MessageListener {
     private void invalidateExact(String key) {
         if (key != null && !key.isBlank()) {
             localCache.invalidate(key);
+            l1ExpirationTracker.remove(key);
         }
     }
 
@@ -57,6 +61,7 @@ public class CacheInvalidationListener implements MessageListener {
         for (String key : localCache.asMap().keySet()) {
             if (key.startsWith(prefix)) {
                 localCache.invalidate(key);
+                l1ExpirationTracker.remove(key);
             }
         }
     }

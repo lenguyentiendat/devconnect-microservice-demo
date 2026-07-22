@@ -97,4 +97,18 @@ class FeedControllerTests {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false));
     }
+
+    @Test
+    void getPostsReturnsBadRequestEnvelopeForInvalidPageToken() throws Exception {
+        when(feedService.getPosts(2, 20, "tampered"))
+                .thenThrow(new BusinessException("Invalid page token"));
+
+        mockMvc.perform(get("/api/feed/posts")
+                        .param("pageNum", "2")
+                        .param("pageSize", "20")
+                        .param("pageToken", "tampered"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("Invalid page token"));
+    }
 }

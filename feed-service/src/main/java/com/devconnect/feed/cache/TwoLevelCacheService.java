@@ -10,7 +10,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
@@ -24,19 +23,21 @@ public class TwoLevelCacheService implements CacheService {
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
     private final int ttlJitterPercent;
-    private final ConcurrentHashMap<String, Instant> l1Expirations = new ConcurrentHashMap<>();
+    private final L1ExpirationTracker l1ExpirationTracker;
 
     public TwoLevelCacheService(
             Cache<String, byte[]> l1Cache,
             RedisCacheStore redisCacheStore,
             ObjectMapper objectMapper,
             CacheProperties properties,
-            MeterRegistry meterRegistry
+            MeterRegistry meterRegistry,
+            L1ExpirationTracker l1ExpirationTracker
     ) {
         this.l1Cache = Objects.requireNonNull(l1Cache, "l1Cache must not be null");
         this.redisCacheStore = Objects.requireNonNull(redisCacheStore, "redisCacheStore must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
+        this.l1ExpirationTracker = Objects.requireNonNull(l1ExpirationTracker, "l1ExpirationTracker must not be null");
         this.ttlJitterPercent = Objects.requireNonNull(properties, "properties must not be null").ttlJitterPercent();
     }
 
@@ -76,7 +77,7 @@ public class TwoLevelCacheService implements CacheService {
     public boolean evictCacheByExactKey(String key) {
         validateKey(key, "key");
         boolean removedFromL1 = l1Cache.asMap().remove(key) != null;
-        l1Expirations.remove(key);
+        l1ExpirationTracker.remove(key);
         try {
             return redisCacheStore.delete(key) || removedFromL1;
         } catch (RuntimeException exception) {
@@ -95,6 +96,12 @@ public class TwoLevelCacheService implements CacheService {
             recordRedisError();
             return removedFromL1;
         }
+    }
+
+    @Override
+    public long evictLocalPrefix(String prefix) {
+        validateKey(prefix, "prefix");
+        return removeL1Prefix(prefix);
     }
 
     @Override
@@ -125,10 +132,10 @@ public class TwoLevelCacheService implements CacheService {
     private <T> Optional<T> readL1(String key, Class<T> valueType) {
         byte[] serialized = l1Cache.getIfPresent(key);
         if (serialized == null) {
-            l1Expirations.remove(key);
+            l1ExpirationTracker.remove(key);
             return Optional.empty();
         }
-        Instant expiration = l1Expirations.get(key);
+        Instant expiration = l1ExpirationTracker.get(key);
         if (expiration != null && !expiration.isAfter(Instant.now())) {
             removeL1(key);
             return Optional.empty();
@@ -168,7 +175,7 @@ public class TwoLevelCacheService implements CacheService {
     }
 
     private void storeL1(String key, byte[] serialized, Duration ttl) {
-        l1Expirations.put(key, Instant.now().plus(jitter(ttl)));
+        l1ExpirationTracker.record(key, Instant.now().plus(jitter(ttl)));
         l1Cache.put(key, serialized.clone());
     }
 
@@ -176,7 +183,7 @@ public class TwoLevelCacheService implements CacheService {
         long removed = 0;
         for (String key : l1Cache.asMap().keySet()) {
             if (key.startsWith(prefix) && l1Cache.asMap().remove(key) != null) {
-                l1Expirations.remove(key);
+                l1ExpirationTracker.remove(key);
                 removed++;
             }
         }
@@ -185,7 +192,7 @@ public class TwoLevelCacheService implements CacheService {
 
     private void removeL1(String key) {
         l1Cache.invalidate(key);
-        l1Expirations.remove(key);
+        l1ExpirationTracker.remove(key);
     }
 
     private Duration jitter(Duration ttl) {
