@@ -1,387 +1,121 @@
-# REST API reference
+# API Reference
 
-> Điều hướng: [Mục lục](README.md) · [Quick start](../README.md) · [Kiến trúc](ARCHITECTURE.md) · [Events](EVENTS.md)
+## Base URL and conventions
 
-## 1. Quy ước chung
+All public requests go through the Gateway:
 
-Base URL local phụ thuộc service:
+```text
+http://localhost:8090
+```
 
-| Service | Base URL |
-|---|---|
-| User | `http://localhost:3000` |
-| Feed | `http://localhost:8082` |
-| Search | `http://localhost:8083` |
-| Notification | `http://localhost:8084` |
+Do not use service ports `8081`–`8084` from a browser or Swagger UI. The Gateway preserves each controller path; it does not strip a prefix.
 
-Phần lớn business response dùng envelope:
+Most read responses use an envelope:
+
+```json
+{ "success": true, "message": "...", "data": {} }
+```
+
+Validation failures use `400 Bad Request`; missing resources use `404 Not Found`; duplicate user IDs or emails use `409 Conflict`. Feed creation can return `503 Service Unavailable` when User Service validation cannot be reached.
+
+## User Service
+
+### Create user
+
+`POST /api/users`
 
 ```json
 {
-  "success": true,
-  "message": "Mô tả kết quả",
-  "data": {}
+  "userId": "u001",
+  "status": "ACTIVE",
+  "email": "u001@example.com"
 }
 ```
 
-Ngoại lệ hiện tại là `POST /api/feed/posts`: success response trả trực tiếp `PostResponse`, không bọc `ApiResponse`. Error response của endpoint này vẫn dùng envelope phía dưới.
+`userId` is required and at most 64 characters. `status` is `ACTIVE` or `INACTIVE`. `email` is required, valid, at most 254 characters, trimmed, and normalized to lowercase before uniqueness is checked. A successful request returns `201 Created`.
 
-Error do `feed-service` và `user-service` chủ động tạo có dạng:
+### Update user
+
+`PUT /api/users/{userId}`
 
 ```json
-{
-  "success": false,
-  "message": "Mô tả lỗi",
-  "data": null
-}
+{ "status": "INACTIVE", "email": "new-address@example.com" }
 ```
 
-Tất cả timestamp API là `LocalDateTime` được Jackson serialize theo ISO-8601 nhưng không chứa timezone/UTC offset. Feed Service tạo thời gian theo UTC, truncate về millisecond để khớp Cassandra `timestamp`, ví dụ `2026-07-14T03:15:30.123`.
+`email` is optional on update; when present it is normalized and must remain unique. A successful request returns `200 OK`.
 
-Project chưa version API, chưa có authentication, pagination hay OpenAPI endpoint.
+The User Service also provides `GET /internal/users/{userId}/status` for Feed Service's discovery-based Feign call. That endpoint is deliberately not routed by Gateway and is not a frontend API.
 
-### Danh sách endpoint
+## Feed Service
 
-| Method | Path | Service | Success |
-|---|---|---|---:|
-| POST | `/api/users` | User | 201 |
-| PUT | `/api/users/{userId}` | User | 200 |
-| GET | `/internal/users/{userId}/status` | User | 200 |
-| POST | `/api/feed/posts` | Feed | 201 |
-| GET | `/api/feed/posts` | Feed | 200 |
-| GET | `/api/feed/posts/{postId}` | Feed | 200 |
-| GET | `/api/search/posts?keyword=...` | Search | 200 |
-| GET | `/api/notifications/users/{userId}` | Notification | 200 |
+### Create post
 
-Không endpoint nào yêu cầu token trong bản demo. `/internal/**` chỉ mang ý nghĩa service-to-service theo convention; nó vẫn có thể truy cập từ host qua port `3000`. Bên trong Compose network, User Service vẫn lắng nghe port `8081`.
-
-## 2. User Service
-
-### Tạo user
-
-```http
-POST /api/users
-Content-Type: application/json
-```
-
-Request body:
-
-| Field | Kiểu | Bắt buộc | Rule |
-|---|---|---|---|
-| `userId` | string | Có | Không blank, tối đa 64 ký tự và chưa tồn tại. |
-| `status` | string | Có | Chỉ nhận `ACTIVE` hoặc `INACTIVE`. |
-| `email` | string | Có | Email hợp lệ, tối đa 254 ký tự và chưa được user khác sử dụng. Giá trị được trim và chuyển thành chữ thường. |
-
-Ví dụ:
-
-```powershell
-$body = @{
-  userId = "u004"
-  status = "ACTIVE"
-  email = "user@example.com"
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://localhost:3000/api/users" -ContentType "application/json" -Body $body
-```
-
-Response `201 Created`:
+`POST /api/feed/posts`
 
 ```json
-{
-  "success": true,
-  "message": "User created successfully",
-  "data": {
-    "userId": "u004",
-    "status": "ACTIVE",
-    "email": "user@example.com"
-  }
-}
+{ "authorId": "u001", "content": "Hello from DevConnect" }
 ```
 
-Nếu `userId` đã tồn tại, API trả `409 Conflict` với message `User already exists`. Nếu email đã tồn tại (không phân biệt chữ hoa/thường), API trả `409 Conflict` với message `Email already exists`. Email thiếu, blank, sai định dạng hoặc dài hơn 254 ký tự; `userId` không hợp lệ; hoặc status ngoài hai giá trị hợp lệ đều trả response validation chuẩn với `400 Bad Request`.
+Both fields are required. Feed Service checks the author's active status through User Service, saves Cassandra read models, publishes a `POST_CREATED` event, and returns `201 Created` with the created post.
 
-### Cập nhật user
+### Read posts
 
-```http
-PUT /api/users/{userId}
-Content-Type: application/json
-```
-
-`status` vẫn bắt buộc. `email` là tùy chọn để giữ tương thích với client cũ: bỏ qua field này sẽ giữ nguyên email hiện tại; gửi email mới sẽ trim, chuyển thành chữ thường, validate và kiểm tra trùng. Endpoint không cho đổi `userId` và không tự tạo user:
-
-```json
-{
-  "status": "INACTIVE",
-  "email": "new-address@example.com"
-}
-```
-
-Response `200 OK`:
-
-```json
-{
-  "success": true,
-  "message": "User updated successfully",
-  "data": {
-    "userId": "u004",
-    "status": "INACTIVE",
-    "email": "new-address@example.com"
-  }
-}
-```
-
-User không tồn tại nhận `404 Not Found` với message `User not found`. Status thiếu, blank hoặc không phải `ACTIVE`/`INACTIVE`, hay email được gửi nhưng blank/sai định dạng/quá 254 ký tự, nhận `400 Bad Request`. Email trùng nhận `409 Conflict` với message `Email already exists`.
-
-### Lấy trạng thái user
-
-```http
-GET /internal/users/{userId}/status
-```
-
-Endpoint này được thiết kế cho service-to-service call, dù demo chưa có cơ chế chặn public access.
-
-Ví dụ:
-
-```powershell
-Invoke-RestMethod "http://localhost:3000/internal/users/u001/status"
-```
-
-Response `200 OK`:
-
-```json
-{
-  "success": true,
-  "message": "User status found",
-  "data": {
-    "userId": "u001",
-    "status": "ACTIVE"
-  }
-}
-```
-
-Response `404 Not Found` khi ID không tồn tại:
-
-```json
-{
-  "success": false,
-  "message": "User not found",
-  "data": null
-}
-```
-
-## 3. Feed Service
-
-### Tạo post
-
-```http
-POST /api/feed/posts
-Content-Type: application/json
-```
-
-Request body:
-
-| Field | Kiểu | Bắt buộc | Rule |
-|---|---|---|---|
-| `authorId` | string | Có | Không được null, rỗng hoặc chỉ có whitespace. |
-| `content` | string | Có | Không blank, tối đa 5000 ký tự và không chứa `spam`/`scam` (không phân biệt hoa thường). |
-
-Ví dụ:
-
-```powershell
-$body = @{ authorId = "u001"; content = "Spring Boot and Kafka" } | ConvertTo-Json
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8082/api/feed/posts" `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-Response `201 Created` trả trực tiếp `PostResponse`:
-
-```json
-{
-  "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
-  "authorId": "u001",
-  "content": "Spring Boot and Kafka",
-  "createdAt": "2026-07-14T03:15:30.123"
-}
-```
-
-Response không có message `Post created successfully` và hiện chưa trả header `Location`.
-
-Các lỗi có thể có:
-
-| HTTP | Message | Điều kiện |
-|---:|---|---|
-| 400 | `authorId is required` | `authorId` null/rỗng/blank. |
-| 400 | `content is required` | `content` null/rỗng/blank. |
-| 400 | `Post content must not exceed 5000 characters` | Content dài hơn 5000 ký tự. |
-| 400 | `Post content contains prohibited words` | Content chứa `spam` hoặc `scam`, không phân biệt hoa thường. |
-| 400 | `Author not found` | Feign nhận 404 hoặc response envelope null/không thành công/không có data. |
-| 400 | `Author is not active` | User tồn tại nhưng status khác `ACTIVE`. |
-| 503 | `Failed to call User Service` | Feign gặp HTTP error khác 404, lỗi kết nối, timeout hoặc decoding. |
-| 500 | `Internal server error` | Exception không được phân loại. |
-
-Ví dụ error body:
-
-```json
-{
-  "success": false,
-  "message": "Author is not active",
-  "data": null
-}
-```
-
-Feed Service dùng OpenFeign để kiểm tra tác giả và chạy tác vụ này song song với content validation. HTTP response chỉ được trả sau khi cả hai validation và logged batch Cassandra đã hoàn tất; không đảm bảo search index/notification đã sẵn sàng hoặc Kafka đã acknowledge message.
-
-### Lấy danh sách post
-
-```http
-GET /api/feed/posts
-```
-
-Ví dụ:
-
-```powershell
-Invoke-RestMethod "http://localhost:8082/api/feed/posts"
-```
-
-Response `200 OK`:
-
-```json
-{
-  "success": true,
-  "message": "Posts found",
-  "data": [
-    {
-      "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
-      "authorId": "u001",
-      "content": "Spring Boot and Kafka",
-      "createdAt": "2026-07-14T03:15:30.123"
-    }
-  ]
-}
-```
-
-Danh sách được sắp xếp theo `createdAt` giảm dần. API chưa có pagination; khi không có post, `data` là `[]`.
-
-### Lấy một post
-
-```http
-GET /api/feed/posts/{postId}
-```
-
-Ví dụ:
-
-```powershell
-Invoke-RestMethod "http://localhost:8082/api/feed/posts/5b990c7c-72b1-4af3-9f50-66c56d9ee94d"
-```
-
-Response `200 OK` có `data` là một `PostResponse` giống schema phía trên.
-
-Nếu không tìm thấy, code hiện trả `400 Bad Request`:
-
-```json
-{
-  "success": false,
-  "message": "Post not found",
-  "data": null
-}
-```
-
-Đây là hành vi hiện tại; API production thường nên dùng `404 Not Found`.
-
-## 4. Search Service
-
-### Tìm post theo nội dung
-
-```http
-GET /api/search/posts?keyword={keyword}
-```
-
-Ví dụ:
-
-```powershell
-Invoke-RestMethod "http://localhost:8083/api/search/posts?keyword=kafka"
-```
-
-Response `200 OK`:
-
-```json
-{
-  "success": true,
-  "message": "Search result",
-  "data": [
-    {
-      "postId": "5b990c7c-72b1-4af3-9f50-66c56d9ee94d",
-      "authorId": "u001",
-      "content": "Spring Boot and Kafka"
-    }
-  ]
-}
-```
-
-Đặc tính tìm kiếm hiện tại:
-
-- Không phân biệt hoa/thường.
-- Match theo substring trên toàn bộ `content`.
-- Không tìm theo author/post ID.
-- Không bảo đảm thứ tự kết quả do dữ liệu đến từ `ConcurrentHashMap`.
-- Không có pagination hoặc scoring.
-- Keyword rỗng match mọi post; thiếu query parameter làm Spring trả HTTP 400 theo error format mặc định của framework.
-
-Search index được cập nhật bất đồng bộ. Post vừa tạo có thể chưa xuất hiện ngay. Khi `search-service` restart, map cục bộ được rebuild bằng cách replay các event còn trong Kafka; API có thể trả dữ liệu thiếu trong lúc consumer catch up và không thể khôi phục event đã hết retention.
-
-## 5. Notification Service
-
-### Lấy notification theo user
-
-```http
-GET /api/notifications/users/{userId}
-```
-
-Ví dụ:
-
-```powershell
-Invoke-RestMethod "http://localhost:8084/api/notifications/users/u001"
-```
-
-Response `200 OK`:
-
-```json
-{
-  "success": true,
-  "message": "Notifications found",
-  "data": [
-    {
-      "notificationId": "253ca64a-4d4f-46d2-baf7-4bf3da81fc0a",
-      "userId": "u001",
-      "title": "Post created",
-      "message": "Your post 5b990c7c-72b1-4af3-9f50-66c56d9ee94d was created successfully",
-      "createdAt": "2026-07-14T10:15:31.456789"
-    }
-  ]
-}
-```
-
-Endpoint luôn trả 200; user không có notification nhận `data: []`. Thứ tự notification không được bảo đảm và chưa có pagination/read status. Khi service restart, notification và trạng thái dedup được dựng lại từ event Kafka còn retention; `notificationId`/`createdAt` có thể được sinh lại.
-
-## 6. cURL tương đương
-
-Nếu không dùng PowerShell:
+`GET /api/feed/posts` returns a cursor-paged feed in an API envelope. The first
+page uses optional `pageNum` and `pageSize` parameters (defaults: `1` and `20`):
 
 ```bash
-curl -X POST http://localhost:3000/api/users \
-  -H 'Content-Type: application/json' \
-  -d '{"userId":"u004","status":"ACTIVE"}'
-
-curl -X PUT http://localhost:3000/api/users/u004 \
-  -H 'Content-Type: application/json' \
-  -d '{"status":"INACTIVE"}'
-
-curl -X POST http://localhost:8082/api/feed/posts \
-  -H 'Content-Type: application/json' \
-  -d '{"authorId":"u001","content":"Spring Boot and Kafka"}'
-
-curl 'http://localhost:8082/api/feed/posts'
-curl 'http://localhost:8083/api/search/posts?keyword=kafka'
-curl 'http://localhost:8084/api/notifications/users/u001'
+curl 'http://localhost:8090/api/feed/posts?pageNum=1&pageSize=20'
 ```
+
+When `data.hasNext` is `true`, request the next page with the returned token:
+
+```bash
+curl --get 'http://localhost:8090/api/feed/posts' \
+  --data-urlencode 'pageNum=2' \
+  --data-urlencode 'pageSize=20' \
+  --data-urlencode 'pageToken=TOKEN_FROM_PREVIOUS_RESPONSE'
+```
+
+Clients must treat `pageToken` as opaque: do not parse, construct, or modify it.
+`pageToken` is required after page one. The response data contains `items`,
+`pageNum`, `pageSize`, `hasNext`, `nextPageToken`, and `feedRevision`.
+
+`GET /api/feed/posts/{postId}` returns one post in an API envelope. Use the `postId` returned by creation.
+
+## Search Service
+
+### Search posts
+
+`GET /api/search/posts?keyword={keyword}`
+
+Example:
+
+```bash
+curl 'http://localhost:8090/api/search/posts?keyword=DevConnect'
+```
+
+The result contains post projections with `postId`, `authorId`, and `content`. Search Service currently maintains an in-memory projection from `post-events`; it has no Elasticsearch endpoint or Elasticsearch dependency. A newly created post may not appear until its Kafka event is consumed.
+
+## Notification Service
+
+### List a user's notifications
+
+`GET /api/notifications/users/{userId}`
+
+Example:
+
+```bash
+curl http://localhost:8090/api/notifications/users/u001
+```
+
+The response contains in-memory notifications with `notificationId`, `userId`, `title`, `message`, and `createdAt`. Notifications are created by the Kafka consumer after a post is created, so this endpoint is eventually consistent.
+
+Notification Service exposes REST only in the current implementation. It does not expose SSE or WebSocket endpoints.
+
+## Typical end-to-end sequence
+
+1. Create an active user.
+2. Create a post with that user as `authorId`.
+3. Poll Search and Notification endpoints briefly until the Kafka projections have consumed the event.
+
+Use [Gateway Swagger UI](http://localhost:8090/swagger-ui.html) for interactive requests. Swagger loads one aggregate document at `/v3/api-docs/aggregate`; see [OpenAPI and CORS](OPENAPI.md) for aggregation and the underlying service documents.

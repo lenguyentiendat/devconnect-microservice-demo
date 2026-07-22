@@ -2,17 +2,18 @@ package com.devconnect.feed.controller;
 
 import com.devconnect.feed.dto.ApiResponse;
 import com.devconnect.feed.dto.CreatePostRequest;
+import com.devconnect.feed.dto.FeedPageResponse;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.service.FeedService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/feed/posts")
@@ -41,10 +42,17 @@ public class FeedController {
     }
 
     @GetMapping
-    @Operation(summary = "List posts", description = "Return all posts currently available in the feed read model.")
+    @Operation(summary = "List posts", description = "Return a cursor-paged feed. pageToken is required after page one.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Posts found")
-    public ApiResponse<List<PostResponse>> getPosts() {
-        return ApiResponse.success("Posts found", feedService.getPosts());
+    public ApiResponse<FeedPageResponse> getPosts(
+            @Parameter(description = "One-based page number", example = "1", schema = @Schema(defaultValue = "1", minimum = "1"))
+            @RequestParam(defaultValue = "1") @Min(1) int pageNum,
+            @Parameter(description = "Number of posts to return; the configured maximum is enforced by the service", example = "20", schema = @Schema(defaultValue = "20", minimum = "1"))
+            @RequestParam(defaultValue = "20") @Min(1) int pageSize,
+            @Parameter(description = "Opaque cursor returned by the preceding page; required after page one", example = "eyJ2IjoxLCJwcyI6Ii4uLiJ9")
+            @RequestParam(required = false) String pageToken
+    ) {
+        return ApiResponse.success("Posts found", feedService.getPosts(pageNum, pageSize, pageToken));
     }
 
     @GetMapping("/{postId}")

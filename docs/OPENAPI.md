@@ -1,89 +1,93 @@
-# Swagger / OpenAPI
+# OpenAPI, Swagger UI, and CORS
 
-Project cung cấp **một Swagger UI duy nhất** để demo toàn bộ API trên cùng một trang. Container `swagger-spec` lấy OpenAPI JSON live từ bốn service và gộp thành một document; mỗi service vẫn expose JSON contract nội bộ tại `/v3/api-docs`.
+## One browser-facing entry point
 
-## Swagger UI duy nhất
+Swagger UI is served by the API Gateway:
 
-Sau khi khởi động Compose và các service healthy, mở:
-
-**http://localhost:8090/**
-
-Toàn bộ tag/endpoint của User, Feed, Search và Notification hiển thị trong cùng một danh sách; không còn dropdown nhiều definition.
-
-Các OpenAPI JSON nguồn:
-
-| Service | OpenAPI JSON |
-|---|---|
-| User | http://localhost:3000/v3/api-docs |
-| Feed | http://localhost:8082/v3/api-docs |
-| Search | http://localhost:8083/v3/api-docs |
-| Notification | http://localhost:8084/v3/api-docs |
-
-## API được mô tả
-
-- User: tạo/cập nhật user và tra cứu status nội bộ.
-- Feed: tạo, liệt kê và đọc post.
-- Search: tìm post theo keyword.
-- Notification: liệt kê notification theo user.
-
-Endpoint internal của User Service vẫn được đưa vào spec để kiểm tra service-to-service contract. Schema status nội bộ không chứa email.
-
-## Chạy local
-
-```powershell
-docker compose down --remove-orphans
-docker compose up -d --build
-docker compose ps -a
+```text
+http://localhost:8090/swagger-ui.html
 ```
 
-Trong WSL, chạy từ đúng repository mới:
+Swagger UI loads one aggregate document:
+
+```text
+http://localhost:8090/v3/api-docs/aggregate
+```
+
+The API Gateway fetches the existing `/v3/api-docs` document from each service through Eureka, then merges the documents before returning them to Swagger UI:
+
+```text
+Gateway /v3/api-docs/aggregate
+  ├── user-service       /v3/api-docs
+  ├── feed-service       /v3/api-docs
+  ├── search-service     /v3/api-docs
+  └── notification-service /v3/api-docs
+```
+
+The individual same-origin proxy URLs remain available for inspection and compatibility:
+
+| Service | Gateway document URL |
+| --- | --- |
+| User Service | `http://localhost:8090/openapi/user/v3/api-docs` |
+| Feed Service | `http://localhost:8090/openapi/feed/v3/api-docs` |
+| Search Service | `http://localhost:8090/openapi/search/v3/api-docs` |
+| Notification Service | `http://localhost:8090/openapi/notification/v3/api-docs` |
+
+The aggregate namespaces component names and operation IDs with the service name. This prevents shared names such as `ApiResponse` from overwriting one another while preserving the original API paths.
+
+Each service defines one OpenAPI `Server` from `app.openapi.server-url`. The default is:
+
+```yaml
+app:
+  openapi:
+    server-url: ${OPENAPI_SERVER_URL:http://localhost:8090}
+```
+
+Set `OPENAPI_SERVER_URL` in a deployment environment when its public Gateway URL differs. Never set it to a Docker hostname or an individual service port for browser documentation.
+
+## Gateway routes used by Swagger execution
+
+| API family | Route target |
+| --- | --- |
+| `/api/users/**` | `lb://user-service` |
+| `/api/feed/posts/**` | `lb://feed-service` |
+| `/api/search/**` | `lb://search-service` |
+| `/api/notifications/**` | `lb://notification-service` |
+
+The Gateway is Spring Cloud Gateway WebFlux. The aggregate controller calls services with Eureka-backed load balancing. Individual Swagger document proxy routes rewrite only `/openapi/{service}/v3/api-docs` to `/v3/api-docs`; business API paths are not rewritten.
+
+The merged document declares `http://localhost:8090` as its server URL. Consequently, Swagger **Try it out** calls remain on the Gateway and use the normal business routes, such as `/api/users`, `/api/feed/posts`, `/api/search/posts`, and `/api/notifications/users/{userId}`.
+
+For `GET /api/feed/posts`, Swagger exposes `pageNum`, `pageSize`, and
+`pageToken` query parameters. Start without a token; when `hasNext` is true,
+send the returned opaque `nextPageToken` with the next page request. The Feed
+operation still executes through `http://localhost:8090` on the Gateway.
+
+## CORS policy
+
+CORS is configured once at the Gateway with WebFlux global CORS. The development allowed origin defaults to `http://localhost:8090` and can be overridden by `GATEWAY_ALLOWED_ORIGIN`.
+
+Allowed methods are `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS`. Required request headers include `Content-Type`, `Authorization`, `Accept`, and `Origin`. Credentials are allowed, so the configuration does not use wildcard origins. Service-level CORS filters were removed to avoid duplicate `Access-Control-Allow-Origin` headers.
+
+Same-origin requests from the Swagger UI do not require CORS headers. Cross-origin frontend requests require an origin that matches `GATEWAY_ALLOWED_ORIGIN`; configure that exact development frontend origin instead of adding a broad wildcard.
+
+## Verify preflight
+
+Use a different host spelling for a cross-origin check while targeting the same Gateway process:
 
 ```bash
-cd /mnt/d/devconnect-microservice-demo
-# hoặc: cd ~/devconnect-microservice-demo
-docker compose config --services
+curl -i -X OPTIONS http://127.0.0.1:8090/api/users \
+  -H 'Origin: http://localhost:8090' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type,authorization'
 ```
 
-Danh sách phải có `notification-service` và `swagger-ui`. Nếu dùng bản copy trong home, đồng bộ nội dung (không copy cả thư mục lồng nhau):
+Repeat with `/api/feed/posts`, `/api/search/posts`, and `/api/notifications/users/u001`. A valid response includes the matching `Access-Control-Allow-Origin`, allowed methods and headers, and credentials setting; it must not return `401`, `403`, `404`, or `5xx`.
 
-```bash
-cp -r /mnt/d/devconnect-microservice-demo/. ~/devconnect-microservice-demo/
-```
+## Troubleshooting
 
-Compose dùng network external tên `devconnect-network`. Tạo một lần nếu chưa tồn tại:
-
-```bash
-docker network inspect devconnect-network >/dev/null 2>&1 || \
-  docker network create devconnect-network
-```
-
-Hoặc kiểm tra source/build trước:
-
-```powershell
-mvn clean verify
-```
-
-Swagger UI tổng hợp được khai báo trong `docker-compose.yml` bằng image `swaggerapi/swagger-ui`, map host port `8090` và load file `/out/openapi.json` do `swagger-spec` tạo. Docker image này phục vụ UI tại `/` (không phải `/swagger-ui.html`). CORS chỉ mở cho origin `http://localhost:8090` trên các endpoint `/v3/api-docs/**`.
-
-Khi API contract thay đổi, chạy lại generator:
-
-```bash
-docker compose up --force-recreate swagger-spec
-docker compose restart swagger-ui
-```
-
-Nếu UI không mở, kiểm tra:
-
-```powershell
-docker compose ps -a
-docker compose logs --tail=200 swagger-ui
-docker compose logs --tail=200 user-service feed-service
-```
-
-Khi build image sau khi cập nhật source/Dockerfile, dùng `docker compose build --no-cache`.
-
-## Ghi chú
-
-- OpenAPI JSON được tạo live bởi springdoc-openapi 3.0.3.
-- Swagger UI tổng hợp là entry point duy nhất dành cho presentation; route/payload/status code/error envelope của business API không thay đổi.
-- Email xuất hiện trong public User profile request/response, không xuất hiện trong internal status response.
+- If Swagger sends a request to `8081`, `8082`, `8083`, or `8084`, inspect the service's `OPENAPI_SERVER_URL` and restart it.
+- If `/v3/api-docs/aggregate` returns `503` or `500`, confirm all four business services are `UP` in Eureka and inspect the Gateway log for the unavailable service.
+- If a proxied document returns `503`, confirm the corresponding service is `UP` in Eureka.
+- If a browser preflight fails, confirm the browser origin exactly matches `GATEWAY_ALLOWED_ORIGIN` and that the request is going to port 8090.
+- The Gateway's standard `/v3/api-docs` and `/v3/api-docs/swagger-config` endpoints remain enabled for Springdoc UI support; the merged contract is served separately at `/v3/api-docs/aggregate`.

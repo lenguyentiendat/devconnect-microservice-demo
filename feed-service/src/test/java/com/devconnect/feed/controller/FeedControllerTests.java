@@ -1,6 +1,7 @@
 package com.devconnect.feed.controller;
 
 import com.devconnect.feed.dto.CreatePostRequest;
+import com.devconnect.feed.dto.FeedPageResponse;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.service.FeedService;
@@ -15,6 +16,7 @@ import java.time.LocalDateTime;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -71,5 +73,28 @@ class FeedControllerTests {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("Author is not active"));
+    }
+
+    @Test
+    void getPostsReturnsCursorPagedEnvelope() throws Exception {
+        PostResponse post = new PostResponse("post-1", "u001", "Paged post", LocalDateTime.now());
+        when(feedService.getPosts(1, 20, null)).thenReturn(
+                new FeedPageResponse(java.util.List.of(post), 1, 20, true, "opaque", 1L)
+        );
+
+        mockMvc.perform(get("/api/feed/posts")
+                        .param("pageNum", "1")
+                        .param("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.items[0].postId").value("post-1"))
+                .andExpect(jsonPath("$.data.nextPageToken").value("opaque"));
+    }
+
+    @Test
+    void getPostsRejectsPageNumberBelowOne() throws Exception {
+        mockMvc.perform(get("/api/feed/posts").param("pageNum", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.success").value(false));
     }
 }
