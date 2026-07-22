@@ -1,17 +1,24 @@
 package com.devconnect.feed.service;
 
+import com.devconnect.feed.cache.CacheInvalidationPublisher;
+import com.devconnect.feed.cache.CacheKeyFactory;
+import com.devconnect.feed.cache.CacheService;
+import com.devconnect.feed.cache.FeedRevisionService;
 import com.devconnect.feed.client.UserServiceAdapter;
+import com.devconnect.feed.config.CacheProperties;
 import com.devconnect.feed.dto.CreatePostRequest;
 import com.devconnect.feed.dto.PostResponse;
 import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.persistence.PostStore;
+import com.devconnect.feed.paging.PageTokenCodec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +41,7 @@ class FeedServiceParallelValidationTests {
     private PostStore postStore;
     private FeedService feedService;
     private ThreadPoolTaskExecutor executor;
+    private CacheProperties cacheProperties;
 
     @BeforeEach
     void setUp() {
@@ -46,11 +54,18 @@ class FeedServiceParallelValidationTests {
         executor.setQueueCapacity(10);
         executor.setThreadNamePrefix("post-async-test-");
         executor.initialize();
+        cacheProperties = cacheProperties();
         feedService = new FeedService(
                 userServiceAdapter,
                 publisher,
                 postStore,
-                executor
+                executor,
+                mock(CacheService.class),
+                new CacheKeyFactory(cacheProperties),
+                cacheProperties,
+                mock(FeedRevisionService.class),
+                mock(CacheInvalidationPublisher.class),
+                new PageTokenCodec("test-page-token-secret")
         );
     }
 
@@ -68,7 +83,13 @@ class FeedServiceParallelValidationTests {
                 userServiceAdapter,
                 publisher,
                 postStore,
-                coordinatingExecutor
+                coordinatingExecutor,
+                mock(CacheService.class),
+                new CacheKeyFactory(cacheProperties),
+                cacheProperties,
+                mock(FeedRevisionService.class),
+                mock(CacheInvalidationPublisher.class),
+                new PageTokenCodec("test-page-token-secret")
         );
 
         PostResponse post = feedService.createPost(
@@ -99,6 +120,16 @@ class FeedServiceParallelValidationTests {
         verify(postStore, never()).save(any());
         verify(publisher, never()).publishPostCreated(any());
         verify(userServiceAdapter).getUserStatus("u001");
+    }
+
+    private static CacheProperties cacheProperties() {
+        return new CacheProperties(
+                true, "local", 100,
+                Duration.ofSeconds(45), Duration.ofMinutes(5),
+                Duration.ofSeconds(10), Duration.ofMinutes(1),
+                20, 100, 0, 100,
+                "devconnect:cache:invalidation", "page-token-secret"
+        );
     }
 
     private static final class CoordinatingExecutor implements Executor {

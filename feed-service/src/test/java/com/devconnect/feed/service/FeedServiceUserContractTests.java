@@ -1,13 +1,21 @@
 package com.devconnect.feed.service;
 
+import com.devconnect.feed.cache.CacheInvalidationPublisher;
+import com.devconnect.feed.cache.CacheKeyFactory;
+import com.devconnect.feed.cache.CacheService;
+import com.devconnect.feed.cache.FeedRevisionService;
 import com.devconnect.feed.client.UserServiceAdapter;
+import com.devconnect.feed.config.CacheProperties;
 import com.devconnect.feed.dto.CreatePostRequest;
 import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.persistence.PostStore;
+import com.devconnect.feed.paging.PageTokenCodec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -29,11 +37,18 @@ class FeedServiceUserContractTests {
         userServiceAdapter = mock(UserServiceAdapter.class);
         publisher = mock(PostEventPublisher.class);
         postStore = mock(PostStore.class);
+        CacheProperties cacheProperties = cacheProperties();
         feedService = new FeedService(
                 userServiceAdapter,
                 publisher,
                 postStore,
-                Runnable::run
+                Runnable::run,
+                mock(CacheService.class),
+                new CacheKeyFactory(cacheProperties),
+                cacheProperties,
+                mock(FeedRevisionService.class),
+                mock(CacheInvalidationPublisher.class),
+                new PageTokenCodec("test-page-token-secret")
         );
     }
 
@@ -64,5 +79,15 @@ class FeedServiceUserContractTests {
         verify(postStore, never()).save(any());
         verify(publisher, never()).publishPostCreated(any());
         verify(userServiceAdapter).getUserStatus("u004");
+    }
+
+    private static CacheProperties cacheProperties() {
+        return new CacheProperties(
+                true, "local", 100,
+                Duration.ofSeconds(45), Duration.ofMinutes(5),
+                Duration.ofSeconds(10), Duration.ofMinutes(1),
+                20, 100, 0, 100,
+                "devconnect:cache:invalidation", "page-token-secret"
+        );
     }
 }
