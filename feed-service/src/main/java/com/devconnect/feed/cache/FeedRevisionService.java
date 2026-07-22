@@ -1,6 +1,8 @@
 package com.devconnect.feed.cache;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -8,6 +10,7 @@ import java.util.Objects;
 
 public class FeedRevisionService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(FeedRevisionService.class);
     private static final String REDIS_ERROR_COUNTER = "feed.cache.redis.errors";
     private static final byte[] INITIAL_REVISION = "1".getBytes(StandardCharsets.UTF_8);
 
@@ -37,7 +40,7 @@ public class FeedRevisionService {
             }
             return redisCacheStore.get(revisionKey).map(FeedRevisionService::parseRevision).orElse(0L);
         } catch (RuntimeException exception) {
-            recordRedisError();
+            recordRedisError("current", exception);
             return 0L;
         }
     }
@@ -46,7 +49,7 @@ public class FeedRevisionService {
         try {
             return redisCacheStore.increment(cacheKeyFactory.feedRevision(feedId));
         } catch (RuntimeException exception) {
-            recordRedisError();
+            recordRedisError("advance", exception);
             return 0L;
         }
     }
@@ -59,7 +62,8 @@ public class FeedRevisionService {
         return revision;
     }
 
-    private void recordRedisError() {
+    private void recordRedisError(String operation, RuntimeException exception) {
         meterRegistry.counter(REDIS_ERROR_COUNTER).increment();
+        LOGGER.warn("Feed revision {} operation failed: {}", operation, exception.getClass().getSimpleName());
     }
 }
