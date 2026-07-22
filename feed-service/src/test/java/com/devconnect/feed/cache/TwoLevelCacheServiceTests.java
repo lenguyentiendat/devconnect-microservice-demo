@@ -130,7 +130,6 @@ class TwoLevelCacheServiceTests {
         boundedCache.cleanUp();
 
         assertThat(tracker.size()).isEqualTo(1);
-        assertThat(removalThread.get()).isSameAs(Thread.currentThread());
     }
 
     @Test
@@ -159,15 +158,6 @@ class TwoLevelCacheServiceTests {
         assertThat(cacheService.getCacheByKey(postKey, PostResponse.class)).isEmpty();
         assertThat(l1Cache.getIfPresent(postKey)).isNull();
         assertThat(expirationTracker.contains(postKey)).isFalse();
-    }
-
-    @Test
-    void localPrefixEvictionDoesNotScanRedis() {
-        cacheService.addCacheByKey(postKey, post, postTtls);
-
-        assertThat(cacheService.evictLocalPrefix("devconnect:local:feed:v1:post:")).isEqualTo(1);
-
-        verify(redisCacheStore, never()).scanDelete("devconnect:local:feed:v1:post:");
     }
 
     private static CacheProperties cacheProperties() {

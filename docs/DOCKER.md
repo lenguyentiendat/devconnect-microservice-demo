@@ -53,7 +53,7 @@ docker compose exec redis redis-cli
 docker compose exec redis redis-cli --scan --pattern 'devconnect:local:feed:v1:page:global:*'
 ```
 
-The scan command is for local verification only; application code uses Redis `SCAN` internally for prefix eviction. A Redis outage does not make Feed reads unavailable: the cache layer records the failure, bypasses the cache, and falls back to Cassandra. Cache and invalidation degradation is visible through Feed actuator metrics, including `feed.cache.redis.errors` and the invalidation counters. Feed exposes `health`, `info`, and `metrics` at `/actuator`.
+Feed application code never scans or deletes keys by prefix. After a post write it advances the feed revision; page keys for older revisions become unreachable and expire naturally. A Redis outage does not make Feed reads unavailable: the cache layer records the failure, bypasses the cache, and falls back to Cassandra. Cache and invalidation degradation is visible through Feed actuator metrics, including `feed.cache.redis.errors` and the invalidation counters. Feed exposes `health`, `info`, and `metrics` at `/actuator`.
 
 Local cache configuration is supplied to Feed Service through these environment variables:
 

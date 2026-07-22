@@ -13,9 +13,6 @@ public interface CacheService {
 
     boolean evictCacheByExactKey(String key);
 
-    long evictPrefixKey(String prefix);
-
-    long evictLocalPrefix(String prefix);
 
     <T> T getOrLoad(String key, Class<T> valueType, CacheTtls ttls, Supplier<T> loader);
 }

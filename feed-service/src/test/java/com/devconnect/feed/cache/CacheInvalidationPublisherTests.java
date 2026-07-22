@@ -39,7 +39,7 @@ class CacheInvalidationPublisherTests {
 
     @Test
     void publishesJsonInvalidationMessageAndCountsIt() {
-        publisher.publish(new CacheInvalidation("post-key", "page-prefix"));
+        publisher.publish(new CacheInvalidation("post-key"));
 
         verify(redisCacheStore).publish(eq("devconnect:cache:invalidation"), any(byte[].class));
     }
@@ -49,7 +49,7 @@ class CacheInvalidationPublisherTests {
         when(redisCacheStore.publish(eq("devconnect:cache:invalidation"), any(byte[].class)))
                 .thenThrow(new RedisConnectionFailureException("down"));
 
-        assertThatCode(() -> publisher.publish(new CacheInvalidation("post-key", "page-prefix")))
+        assertThatCode(() -> publisher.publish(new CacheInvalidation("post-key")))
                 .doesNotThrowAnyException();
 
         assertThat(meterRegistry.counter("feed.cache.redis.errors").count()).isEqualTo(1.0);
@@ -67,7 +67,7 @@ class CacheInvalidationPublisherTests {
         when(failingObjectMapper.writeValueAsBytes(any()))
                 .thenThrow(new JsonMappingException(null, "serialization failed"));
 
-        assertThatCode(() -> publisher.publish(new CacheInvalidation("post-key", "page-prefix")))
+        assertThatCode(() -> publisher.publish(new CacheInvalidation("post-key")))
                 .doesNotThrowAnyException();
 
         assertThat(meterRegistry.counter("feed.cache.serialization.errors").count()).isEqualTo(1.0);
@@ -87,7 +87,7 @@ class CacheInvalidationPublisherTests {
         when(failingObjectMapper.writeValueAsBytes(any()))
                 .thenThrow(new IllegalStateException("invalid mapper configuration"));
 
-        assertThatCode(() -> publisher.publish(new CacheInvalidation("post-key", "page-prefix")))
+        assertThatCode(() -> publisher.publish(new CacheInvalidation("post-key")))
                 .doesNotThrowAnyException();
 
         assertThat(meterRegistry.counter("feed.cache.serialization.errors").count()).isEqualTo(1.0);

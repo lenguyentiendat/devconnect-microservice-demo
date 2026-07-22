@@ -288,14 +288,12 @@ public class FeedService {
             return;
         }
         String postKey = cacheKeyFactory.post(post.postId());
-        String pagePrefix = cacheKeyFactory.feedPagePrefix(GLOBAL_FEED);
         long revision = advanceRevision();
 
-        runCacheOperation("local page eviction", () -> cacheService.evictLocalPrefix(pagePrefix));
         if (revision > 0) {
             runCacheOperation(
                     "invalidation publication",
-                    () -> invalidationPublisher.publish(new CacheInvalidation(postKey, pagePrefix))
+                    () -> invalidationPublisher.publish(new CacheInvalidation(postKey))
             );
         }
         runCacheOperation("post cache write", () -> cacheService.addCacheByKey(

@@ -39,13 +39,13 @@ class CacheInvalidationListenerTests {
         expirationTracker.record("page-prefix:first", pageValue, Instant.now());
         expirationTracker.record("unrelated-key", unrelatedValue, Instant.now());
 
-        listener.onMessage(json("exact-post-key", "page-prefix"));
+        listener.onMessage(json("exact-post-key"));
 
         assertThat(localCache.getIfPresent("exact-post-key")).isNull();
-        assertThat(localCache.getIfPresent("page-prefix:first")).isNull();
+        assertThat(localCache.getIfPresent("page-prefix:first")).isNotNull();
         assertThat(localCache.getIfPresent("unrelated-key")).isNotNull();
         assertThat(expirationTracker.contains("exact-post-key")).isFalse();
-        assertThat(expirationTracker.contains("page-prefix:first")).isFalse();
+        assertThat(expirationTracker.contains("page-prefix:first")).isTrue();
         assertThat(expirationTracker.contains("unrelated-key")).isTrue();
         assertThat(meterRegistry.counter("feed.cache.invalidation.received").count()).isEqualTo(1.0);
     }
@@ -58,7 +58,7 @@ class CacheInvalidationListenerTests {
         assertThat(meterRegistry.counter("feed.cache.invalidation.malformed").count()).isEqualTo(1.0);
     }
 
-    private byte[] json(String exactKey, String prefix) throws Exception {
-        return objectMapper.writeValueAsBytes(new CacheInvalidation(exactKey, prefix));
+    private byte[] json(String exactKey) throws Exception {
+        return objectMapper.writeValueAsBytes(new CacheInvalidation(exactKey));
     }
 }

@@ -41,7 +41,6 @@ public class CacheInvalidationListener implements MessageListener {
         try {
             CacheInvalidation invalidation = objectMapper.readValue(message, CacheInvalidation.class);
             invalidateExact(invalidation.exactKey());
-            invalidatePrefix(invalidation.prefix());
         } catch (IOException | RuntimeException exception) {
             meterRegistry.counter(MALFORMED_COUNTER).increment();
         }
@@ -54,15 +53,4 @@ public class CacheInvalidationListener implements MessageListener {
         }
     }
 
-    private void invalidatePrefix(String prefix) {
-        if (prefix == null || prefix.isBlank()) {
-            return;
-        }
-        for (String key : localCache.asMap().keySet()) {
-            if (key.startsWith(prefix)) {
-                byte[] removedValue = localCache.asMap().remove(key);
-                l1ExpirationTracker.remove(key, removedValue);
-            }
-        }
-    }
 }

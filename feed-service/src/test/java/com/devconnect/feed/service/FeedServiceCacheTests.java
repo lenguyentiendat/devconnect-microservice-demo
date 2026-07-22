@@ -146,7 +146,7 @@ class FeedServiceCacheTests {
     }
 
     @Test
-    void createPostEvictsOnlyLocalPagesBeforePublishingKafkaAndCachesExactPost() {
+    void createPostAdvancesRevisionBeforePublishingKafkaAndCachesExactPost() {
         when(userServiceAdapter.getUserStatus("user-123"))
                 .thenReturn(new UserStatusResponse("user-123", "ACTIVE"));
         when(revisions.advance(GLOBAL_FEED)).thenReturn(8L);
@@ -154,11 +154,9 @@ class FeedServiceCacheTests {
         PostResponse created = feedService.createPost(new CreatePostRequest("user-123", "Created post"));
 
         String exactKey = cacheKeys.post(created.postId());
-        String pagePrefix = cacheKeys.feedPagePrefix(GLOBAL_FEED);
         InOrder ordered = inOrder(revisions, cacheService, invalidationPublisher, postEventPublisher);
         ordered.verify(revisions).advance(GLOBAL_FEED);
-        ordered.verify(cacheService).evictLocalPrefix(pagePrefix);
-        ordered.verify(invalidationPublisher).publish(new CacheInvalidation(exactKey, pagePrefix));
+        ordered.verify(invalidationPublisher).publish(new CacheInvalidation(exactKey));
         ordered.verify(cacheService).addCacheByKey(eq(exactKey), eq(created), any());
         ordered.verify(postEventPublisher).publishPostCreated(any());
     }
@@ -178,14 +176,13 @@ class FeedServiceCacheTests {
     }
 
     @Test
-    void createPostEvictsLocalPagesWhenRevisionAdvanceIsUnavailable() {
+    void createPostSkipsPublicationWhenRevisionAdvanceIsUnavailable() {
         when(userServiceAdapter.getUserStatus("user-123"))
                 .thenReturn(new UserStatusResponse("user-123", "ACTIVE"));
         when(revisions.advance(GLOBAL_FEED)).thenReturn(0L);
 
         feedService.createPost(new CreatePostRequest("user-123", "Created post"));
 
-        verify(cacheService).evictLocalPrefix(cacheKeys.feedPagePrefix(GLOBAL_FEED));
         verify(invalidationPublisher, never()).publish(any());
     }
 

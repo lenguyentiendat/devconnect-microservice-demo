@@ -69,23 +69,6 @@ class RedisCacheIntegrationTests {
         assertThat(redisTemplate.hasKey(key)).isFalse();
     }
 
-    @Test
-    void evictsOnlyKeysMatchingTheRequestedPrefix() {
-        String pagePrefix = cacheKeys.feedPagePrefix("global");
-        String firstPageKey = cacheKeys.feedPage("global", 1, 20, null);
-        String nextPageKey = cacheKeys.feedPage("global", 2, 20, "next-page");
-        String postKey = cacheKeys.post("unrelated-post");
-
-        cacheService.addCacheByKey(firstPageKey, post("first"), TTL);
-        cacheService.addCacheByKey(nextPageKey, post("next"), TTL);
-        cacheService.addCacheByKey(postKey, post("unrelated-post"), TTL);
-
-        assertThat(cacheService.evictPrefixKey(pagePrefix)).isEqualTo(4);
-        assertThat(redisTemplate.hasKey(firstPageKey)).isFalse();
-        assertThat(redisTemplate.hasKey(nextPageKey)).isFalse();
-        assertThat(redisTemplate.hasKey(postKey)).isTrue();
-    }
-
     private static PostResponse post(String postId) {
         return new PostResponse(postId, "author-1", "Redis integration post", LocalDateTime.of(2026, 7, 22, 10, 0));
     }

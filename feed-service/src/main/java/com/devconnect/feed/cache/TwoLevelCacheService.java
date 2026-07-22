@@ -88,24 +88,6 @@ public class TwoLevelCacheService implements CacheService {
     }
 
     @Override
-    public long evictPrefixKey(String prefix) {
-        validateKey(prefix, "prefix");
-        long removedFromL1 = removeL1Prefix(prefix);
-        try {
-            return removedFromL1 + redisCacheStore.scanDelete(prefix);
-        } catch (RuntimeException exception) {
-            recordRedisError();
-            return removedFromL1;
-        }
-    }
-
-    @Override
-    public long evictLocalPrefix(String prefix) {
-        validateKey(prefix, "prefix");
-        return removeL1Prefix(prefix);
-    }
-
-    @Override
     public <T> T getOrLoad(String key, Class<T> valueType, CacheTtls ttls, Supplier<T> loader) {
         validateReadArguments(key, valueType);
         Objects.requireNonNull(ttls, "ttls must not be null");
@@ -180,17 +162,6 @@ public class TwoLevelCacheService implements CacheService {
         l1Cache.put(key, cacheValue);
     }
 
-    private long removeL1Prefix(String prefix) {
-        long removed = 0;
-        for (String key : l1Cache.asMap().keySet()) {
-            byte[] removedValue = key.startsWith(prefix) ? l1Cache.asMap().remove(key) : null;
-            if (removedValue != null) {
-                l1ExpirationTracker.remove(key, removedValue);
-                removed++;
-            }
-        }
-        return removed;
-    }
 
     private void removeL1(String key, byte[] value) {
         l1Cache.asMap().remove(key, value);

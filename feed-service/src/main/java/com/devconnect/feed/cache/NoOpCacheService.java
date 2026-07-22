@@ -27,16 +27,6 @@ public class NoOpCacheService implements CacheService {
     }
 
     @Override
-    public long evictPrefixKey(String prefix) {
-        return 0;
-    }
-
-    @Override
-    public long evictLocalPrefix(String prefix) {
-        return 0;
-    }
-
-    @Override
     public <T> T getOrLoad(String key, Class<T> valueType, CacheTtls ttls, Supplier<T> loader) {
         return Objects.requireNonNull(loader, "loader must not be null").get();
     }
