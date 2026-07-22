@@ -1,345 +1,170 @@
-# Docker và Ubuntu/WSL
+# Docker Compose Operations
 
-> Điều hướng: [Mục lục](README.md) · [Quick start](../README.md) · [Development](DEVELOPMENT.md) · [Database](DATABASE.md)
+## Topology
 
-Tài liệu này mô tả cách build, chạy và xử lý lỗi toàn bộ DevConnect stack bằng Docker Compose.
+`docker-compose.yml` starts 14 services:
 
-## 1. Thành phần Compose
+1. PostgreSQL
+2. pgAdmin
+3. Cassandra
+4. Cassandra Web
+5. Cassandra initialization job
+6. Redis
+7. Kafka
+8. Kafka UI
+9. Discovery Server
+10. User Service
+11. Feed Service
+12. Search Service
+13. Notification Service
+14. API Gateway
 
-File [docker-compose.yml](../docker-compose.yml) khai báo 9 service:
-
-| Service Compose | Container | Port host | Vai trò |
-|---|---|---:|---|
-| `postgres` | `devconnect-postgres` | 5432 | Database của User Service. |
-| `cassandra` | `devconnect-cassandra` | 9042 | Database của Feed Service. |
-| `cassandra-init` | `devconnect-cassandra-init` | Không expose | Tạo keyspace rồi thoát với code 0. |
-| `kafka` | `devconnect-kafka` | 9092 | Event broker. |
-| `kafka-ui` | `devconnect-kafka-ui` | 8085 | UI quan sát Kafka. |
-| `user-service` | `devconnect-user-service` | 3000 | User API; container vẫn lắng nghe port 8081. |
-| `feed-service` | `devconnect-feed-service` | 8082 | Feed API và Kafka producer. |
-| `search-service` | `devconnect-search-service` | 8083 | Search API và Kafka consumer. |
-| `notification-service` | `devconnect-notification-service` | 8084 | Notification API và Kafka consumer. |
-
-Dependency startup:
-
-```mermaid
-flowchart LR
-    PG[(PostgreSQL)] --> U[User Service]
-    CA[(Cassandra)] --> CI[Cassandra Init]
-    CI --> F[Feed Service]
-    K[(Kafka)] --> F
-    K --> S[Search Service]
-    K --> N[Notification Service]
-    K --> UI[Kafka UI]
-    U --> F
-```
-
-Compose chờ healthcheck của PostgreSQL, Cassandra và Kafka; chờ `cassandra-init` hoàn tất; sau đó chờ User Service healthy trước khi khởi động Feed Service.
-
-Trong Compose network, `feed-service` cấu hình `USER_SERVICE_BASE_URL=http://user-service:8081`. Spring Cloud OpenFeign dùng URL này cho named client `user-service`; đây là giao tiếp nội bộ trực tiếp, không đi qua API Gateway. Connect/read timeout hiện đều là 5 giây theo `feed-service/src/main/resources/application.yaml`.
-
-## 2. Yêu cầu Ubuntu
-
-- Docker Engine 20.10.4+.
-- Docker Compose v2 (`docker compose`, không phải binary cũ `docker-compose`).
-- Tối thiểu khoảng 4 GB RAM trống; Cassandra và bốn Maven build có thể cần nhiều hơn trong lần build đầu.
-- Các port 3000, 5432, 8082–8085, 9042 và 9092 chưa bị process khác sử dụng.
-
-Kiểm tra:
+All services join the external Docker network `devconnect-network`. Create it once if it is absent:
 
 ```bash
-docker --version
-docker compose version
-docker info
+docker network create devconnect-network
 ```
 
-Nếu mọi lệnh Docker đều cần `sudo`, có thể tiếp tục dùng `sudo docker compose ...`. Không trộn lệnh có và không có `sudo` cho cùng project vì dễ tạo file/cache khác owner.
+If the network already exists, Docker reports that fact and no action is needed.
 
-## 3. Đảm bảo đang dùng source mới nhất
+## Published and internal ports
 
-### Ubuntu/WSL dùng source trực tiếp trên ổ Windows
+| Component | Host port | Notes |
+| --- | ---: | --- |
+| PostgreSQL | 5432 | Local database inspection |
+| pgAdmin | 5050 | PostgreSQL browser administration UI |
+| Cassandra | 9042 | Local CQL inspection |
+| Cassandra Web | 3001 | Cassandra browser administration UI |
+| Kafka | 9092 | Local Kafka clients |
+| Kafka UI | 8085 | Browser management UI |
+| Discovery Server | 8761 | Eureka dashboard |
+| API Gateway | 8090 | Only public application API/Swagger port |
+| Redis | none | Internal-only Feed cache; no host port is published |
+| User, Feed, Search, Notification | none | Exposed only inside Compose on 8081–8084 |
 
-Nếu source nằm tại `D:\devconnect-microservice-demo`, đường dẫn WSL là:
+The service `expose` settings make business ports available on the Docker network but not published to the host. This prevents accidental browser requests that bypass Gateway CORS and routing.
+
+## Redis cache operations
+
+Redis is an internal-only, disposable cache for Feed posts and cursor-paged feed results. The local container uses `allkeys-lfu`, has no persistence, and deliberately publishes no host port. Inspect it from inside Compose:
 
 ```bash
-cd /mnt/d/devconnect-microservice-demo
+docker compose exec redis redis-cli
+docker compose exec redis redis-cli --scan --pattern 'devconnect:local:feed:v1:page:global:*'
 ```
 
-### Copy source vào Linux home
+The scan command is for local verification only; application code uses Redis `SCAN` internally for prefix eviction. A Redis outage does not make Feed reads unavailable: the cache layer records the failure, bypasses the cache, and falls back to Cassandra. Cache and invalidation degradation is visible through Feed actuator metrics, including `feed.cache.redis.errors` and the invalidation counters. Feed exposes `health`, `info`, and `metrics` at `/actuator`.
 
-Không cần `sudo`:
+Local cache configuration is supplied to Feed Service through these environment variables:
+
+| Variable | Purpose | Local default |
+| --- | --- | --- |
+| `CACHE_ENABLED` | Enables the two-level cache | `true` |
+| `CACHE_ENVIRONMENT` | Namespaces Redis keys | `local` |
+| `CACHE_PAGE_TOKEN_SECRET` | Signs opaque feed page tokens | required; Compose sets a local-only value |
+| `REDIS_CONNECT_TIMEOUT` | Redis connection timeout | `500ms` |
+| `REDIS_COMMAND_TIMEOUT` | Redis command timeout | `500ms` |
+
+For production, use a managed Redis Cluster or Sentinel deployment with TLS and ACLs; keep Redis off the public network. Store ACL credentials and `CACHE_PAGE_TOKEN_SECRET` in a secret manager, set bounded connection/command timeouts, and alert on memory/capacity, evictions, connection errors, latency, and cache-error metrics. Do not reuse the local Compose secret or treat the local Redis container as durable storage.
+
+## Database UI
+
+Start the database UIs with their database dependencies:
 
 ```bash
-cp -a /mnt/d/devconnect-microservice-demo "$HOME/"
-cd "$HOME/devconnect-microservice-demo"
+docker compose up -d pgadmin cassandra-web
 ```
 
-Nếu trước đó đã copy bằng `sudo`, sửa ownership:
-
-```bash
-sudo chown -R "$USER:$USER" "$HOME/devconnect-microservice-demo"
-```
-
-### Ubuntu dùng Git clone riêng
-
-Source mới phải được commit/push từ máy phát triển trước, sau đó:
-
-```bash
-cd ~/devconnect-microservice-demo
-git status
-git pull --ff-only
-```
-
-Không dùng `git reset --hard` khi chưa kiểm tra thay đổi local.
-
-### Xác nhận Compose đọc đúng file
-
-```bash
-pwd
-echo "$COMPOSE_FILE"
-docker compose -f ./docker-compose.yml config --services
-```
-
-Kết quả phải có đủ:
+Open [pgAdmin](http://localhost:5050) and sign in with the local defaults:
 
 ```text
-postgres
-cassandra
-cassandra-init
-kafka
-kafka-ui
-user-service
-feed-service
-search-service
-notification-service
+Email:    admin@devconnect.com
+Password: devconnect
 ```
 
-Nếu chỉ có 5 service, Ubuntu đang đọc source/Compose cũ. Nếu `COMPOSE_FILE` trỏ tới file khác, chạy `unset COMPOSE_FILE` hoặc luôn truyền `-f ./docker-compose.yml`.
+When registering the PostgreSQL server in pgAdmin, use the Compose service name rather than `localhost`:
 
-## 4. Chạy toàn bộ hệ thống
-
-Tại repository root:
-
-```bash
-docker compose -f ./docker-compose.yml up -d --build
+```text
+Host:     postgres
+Port:     5432
+Database: devconnect_users
+Username: devconnect
+Password: devconnect
 ```
 
-Lần đầu Docker sẽ:
+Open [Cassandra Web](http://localhost:3001) and connect to:
 
-1. Pull PostgreSQL, Cassandra, Kafka, Kafka UI, Maven và JRE base image.
-2. Build bốn application image.
-3. Tạo network và named volume.
-4. Khởi động infrastructure theo dependency.
-5. Chạy Flyway khi User Service start.
-6. Tạo Cassandra table khi Feed Service start.
-
-Theo dõi:
-
-```bash
-docker compose -f ./docker-compose.yml ps -a
-docker compose -f ./docker-compose.yml logs -f
+```text
+Host:     cassandra
+Port:     9042
+Keyspace: devconnect_feed
 ```
 
-Trạng thái mong đợi:
+The pgAdmin data is persisted in the `pgadmin-data` named volume. The UI credentials can be overridden with `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD` before starting Compose.
 
-- PostgreSQL, Cassandra, Kafka và bốn application: `Up`/`healthy`.
-- `cassandra-init`: `Exited (0)`; đây là thành công, không phải lỗi.
-- Kafka UI: `Up`.
+Use direct database edits only for local development. For example, safe inspection queries include:
 
-## 5. Dockerfile strategy
-
-Mỗi application có Dockerfile riêng:
-
-- `user-service/Dockerfile`
-- `feed-service/Dockerfile`
-- `search-service/Dockerfile`
-- `notification-service/Dockerfile`
-
-Mỗi Dockerfile dùng hai stage:
-
-1. `maven:3.9.16-eclipse-temurin-21-noble`: resolve dependency và build executable JAR.
-2. `eclipse-temurin:21-jre-noble`: chỉ chứa JRE và `app.jar`.
-
-Runtime chạy bằng numeric user `10001`, không chạy root. `.dockerignore` loại Git metadata, IDE file, log và `target/` khỏi build context.
-
-## 6. Workflow thường dùng
-
-### Build lại toàn bộ
-
-```bash
-docker compose up -d --build --force-recreate --remove-orphans
+```sql
+SELECT user_id, status, email FROM users;
 ```
 
-### Build lại một service
-
-```bash
-docker compose up -d --build feed-service
+```sql
+USE devconnect_feed;
+SELECT * FROM posts_by_id LIMIT 20;
 ```
 
-### Bỏ toàn bộ Docker build cache
+If you intentionally edit local data, examples are:
 
-Chỉ dùng khi nghi cache giữ artifact cũ:
-
-```bash
-docker compose build --no-cache
-docker compose up -d --force-recreate --remove-orphans
+```sql
+UPDATE users SET status = 'INACTIVE' WHERE user_id = 'u001';
 ```
 
-### Xem log
-
-```bash
-docker compose logs -f user-service
-docker compose logs -f feed-service
-docker compose logs -f search-service notification-service
-docker compose logs -f postgres cassandra cassandra-init kafka
+```sql
+USE devconnect_feed;
+DELETE FROM posts_by_id WHERE post_id = <post UUID>;
 ```
 
-Giới hạn số dòng:
+Direct edits bypass application validation, Kafka events, and service-to-service rules. They can make Search and Notification projections inconsistent with User or Feed data until the projections are recreated or the relevant events are replayed.
+
+## Start, inspect, and stop
 
 ```bash
-docker compose logs --tail=200 feed-service
-```
-
-### Restart
-
-```bash
-docker compose restart feed-service
-```
-
-`restart` không build lại source. Sau khi sửa Java code phải dùng `up -d --build SERVICE_NAME`.
-
-### Chạy lệnh trong container
-
-```bash
-docker compose exec user-service java -version
-docker compose exec postgres pg_isready -U devconnect -d devconnect_users
-docker compose exec cassandra cqlsh -e "DESCRIBE KEYSPACE devconnect_feed"
-```
-
-## 7. Dừng và quản lý dữ liệu
-
-Dừng/xóa container và network, giữ database volume:
-
-```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f api-gateway
 docker compose down
 ```
 
-Dừng tạm thời, giữ container:
+Use a specific service name with `docker compose logs -f`, for example `feed-service` or `search-service`, when diagnosing startup or Kafka processing.
+
+## Health and discovery checks
+
+Compose waits on health checks for PostgreSQL, Cassandra, Kafka, Discovery Server, and application TCP ports. After startup:
 
 ```bash
-docker compose stop
-docker compose start
+curl -I http://localhost:8090/actuator/health
+curl -I http://localhost:8761
 ```
 
-Xóa toàn bộ PostgreSQL/Cassandra data:
+Open Eureka and confirm `USER-SERVICE`, `FEED-SERVICE`, `SEARCH-SERVICE`, and `NOTIFICATION-SERVICE` are `UP`. Eureka displays application names in uppercase even though configuration uses lowercase names.
+
+## Data lifecycle
+
+PostgreSQL and Cassandra use named volumes. `docker compose down` preserves them. `docker compose down -v` removes them and all demo database data.
+
+Search and Notification projections are in memory, so restarting either application clears its data regardless of Docker volume state.
+
+## Port 8761 conflict
+
+The documented Compose mapping is `8761:8761`. If another local process already uses 8761, stop that process or use a temporary local Compose override that maps a different host port to container port 8761. Keep the services' internal Eureka URL unchanged (`http://discovery-server:8761/eureka/`).
+
+## Image build notes
+
+Each application Dockerfile builds from the root Maven reactor and packages its own module. A first build may take longer while Maven dependencies are downloaded. Rebuild only an affected service when appropriate:
 
 ```bash
-docker compose down -v
+docker compose build api-gateway
+docker compose up -d api-gateway
 ```
 
-`down -v` là thao tác phá hủy dữ liệu local. Search/notification vốn ở memory nên mất khi container tương ứng restart dù không xóa volume.
-
-## 8. Chạy application trên host để debug
-
-Không chạy application container và application Maven trên cùng port. Chỉ dựng infrastructure:
-
-```bash
-docker compose up -d postgres cassandra cassandra-init kafka kafka-ui
-```
-
-Sau đó chạy bốn module bằng Maven theo [DEVELOPMENT.md](DEVELOPMENT.md#4-chạy-trực-tiếp-trên-host-tùy-chọn).
-
-## 9. Troubleshooting
-
-### Compose vẫn chỉ chạy 5 service
-
-```bash
-pwd
-ls -l docker-compose.yml */Dockerfile
-docker compose -f ./docker-compose.yml config --services
-```
-
-Nếu file không chứa bốn application service, copy/pull lại source. Nếu file đúng nhưng output sai, kiểm tra `COMPOSE_FILE`, `compose.yaml` hoặc `compose.yml` khác trong thư mục.
-
-### Source đã đổi nhưng container vẫn chạy code cũ
-
-```bash
-SERVICE=feed-service
-docker compose build --no-cache "$SERVICE"
-docker compose up -d --force-recreate "$SERVICE"
-```
-
-Xác nhận đang build đúng directory bằng `pwd` và `docker compose config`.
-
-### Container application unhealthy
-
-```bash
-SERVICE=feed-service
-docker compose ps -a
-docker compose logs --tail=300 "$SERVICE"
-docker inspect --format '{{json .State.Health}}' "devconnect-${SERVICE}"
-```
-
-Healthcheck application chỉ kiểm tra TCP port. Log startup mới là nguồn thông tin chính để tìm lỗi database/configuration.
-
-### Cassandra Init không exit 0
-
-```bash
-docker compose logs cassandra cassandra-init
-docker compose up cassandra-init
-```
-
-### Port conflict
-
-```bash
-sudo ss -ltnp | grep -E ':(3000|5432|8082|8083|8084|8085|9042|9092)\b'
-```
-
-Dừng process/container xung đột hoặc đổi host port trong Compose.
-
-### Docker hết RAM/disk
-
-```bash
-docker system df
-free -h
-df -h
-```
-
-Không chạy `docker system prune --volumes` nếu chưa hiểu dữ liệu nào sẽ bị xóa.
-## Swagger UI aggregate
-
-Compose có thêm service `swagger-ui` ở host port `8090`. Sau khi toàn bộ application healthy, mở:
-
-```text
-http://localhost:8090/
-```
-
-Service `swagger-spec` chạy trước `swagger-ui`, lấy bốn `/v3/api-docs` rồi gộp thành một file `/out/openapi.json`; vì vậy toàn bộ endpoint hiển thị trên cùng một trang Swagger.
-
-Danh sách service phải bao gồm cả `notification-service` và `swagger-ui`:
-
-```bash
-docker compose config --services
-docker compose ps -a
-docker compose logs --tail=200 swagger-ui
-```
-
-Nếu dùng WSL, hãy chạy từ repository mới (`/mnt/d/devconnect-microservice-demo`) hoặc đồng bộ nội dung vào home bằng:
-
-```bash
-cp -r /mnt/d/devconnect-microservice-demo/. ~/devconnect-microservice-demo/
-```
-
-Compose dùng external network `devconnect-network`; tạo network một lần nếu chưa có:
-
-```bash
-docker network inspect devconnect-network >/dev/null 2>&1 || docker network create devconnect-network
-```
-
-Khi source hoặc Dockerfile vừa thay đổi, build lại không dùng cache:
-
-```bash
-docker compose down --remove-orphans
-docker compose build --no-cache
-docker compose up -d
-```
+Do not replace `OPENAPI_SERVER_URL` with a container hostname: it is consumed by a browser through Swagger UI and must resolve from the browser's network.

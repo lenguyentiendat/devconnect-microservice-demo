@@ -1,273 +1,123 @@
 # DevConnect Microservice Demo
 
-> Tài liệu đầy đủ: [Mục lục documentation](docs/README.md)
+DevConnect is a local Spring Boot microservices demonstration. It shows service discovery with Eureka, browser-facing routing through Spring Cloud Gateway, synchronous user validation with OpenFeign, and asynchronous post projections with Kafka.
 
-> Swagger/OpenAPI: [URL và hướng dẫn truy cập](docs/OPENAPI.md)
-
-DevConnect là project minh họa một luồng tạo bài viết theo kiến trúc microservice bằng Java 21, Spring Boot và Apache Kafka. Project kết hợp:
-
-- Spring Cloud OpenFeign để `feed-service` xác minh trạng thái tác giả với `user-service` qua HTTP đồng bộ.
-- `CompletableFuture.thenCombine()` để kiểm tra trạng thái tác giả và nội dung post song song trong `FeedService`.
-- Event-driven communication qua Kafka để cập nhật search index và tạo notification theo mô hình eventual consistency.
-
-Project dùng polyglot persistence: PostgreSQL lưu user, Cassandra lưu post; search index và notification vẫn là read model trong bộ nhớ. Đây vẫn là demo local, chưa có authentication, service discovery hay API gateway.
-
-Toàn bộ runtime gồm 10 Compose service: 4 application, 4 infrastructure service, 1 Swagger UI aggregate và 1 one-shot Cassandra initializer.
-
-## Kiến trúc tổng quan
-
-```mermaid
-flowchart LR
-    Client([Client])
-    User[user-service<br/>host :3000<br/>container :8081]
-    Feed[feed-service<br/>:8082]
-    Kafka[(Kafka<br/>:9092)]
-    PostgreSQL[(PostgreSQL<br/>:5432)]
-    Cassandra[(Cassandra<br/>:9042)]
-    Search[search-service<br/>:8083]
-    Notification[notification-service<br/>:8084]
-    KafkaUI[Kafka UI<br/>:8085]
-
-    Client -->|REST| Feed
-    Client -->|REST| Search
-    Client -->|REST| Notification
-    Feed -->|GET user status| User
-    User --> PostgreSQL
-    Feed --> Cassandra
-    Feed -->|POST_CREATED| Kafka
-    Kafka -->|search-service-group| Search
-    Kafka -->|notification-service-group| Notification
-    KafkaUI --> Kafka
-```
-
-| Thành phần | Port mặc định | Vai trò |
-|---|---:|---|
-| `user-service` | 3000 (host) / 8081 (container) | Tạo/cập nhật user và cung cấp trạng thái nội bộ. |
-| `feed-service` | 8082 | Tạo/đọc post, kiểm tra tác giả và publish event. |
-| `search-service` | 8083 | Consume event, lập chỉ mục và tìm post theo nội dung. |
-| `notification-service` | 8084 | Consume event và tạo notification cho tác giả. |
-| PostgreSQL | 5432 | Lưu bảng `users` của User Service. |
-| Cassandra | 9042 | Lưu `posts_by_feed` và `posts_by_id` của Feed Service. |
-| Kafka | 9092 | Broker cho topic `post-events`. |
-| Kafka UI | 8085 | Giao diện quan sát broker/topic/message khi chạy local. |
-
-Luồng chính khi tạo post:
-
-1. Client gọi `POST /api/feed/posts`.
-2. `FeedService` submit hai tác vụ độc lập vào `postTaskExecutor`: gọi User Service bằng OpenFeign và kiểm tra nội dung post.
-3. `thenCombine()` đợi cả hai kết quả; post chỉ được tạo khi tác giả `ACTIVE` và nội dung hợp lệ.
-4. Post được ghi bằng logged batch vào hai Cassandra read model.
-5. `feed-service` gửi event `POST_CREATED` lên topic `post-events` và trả `201 Created` với `PostResponse`.
-6. `search-service` và `notification-service` xử lý cùng event bằng hai consumer group khác nhau.
-7. Search result và notification xuất hiện sau đó theo eventual consistency.
-
-Xem phân tích chi tiết tại [Kiến trúc hệ thống](docs/ARCHITECTURE.md).
-
-## Công nghệ
-
-- Java 21
-- Spring Boot 4.1.0
-- Spring MVC và Spring Cloud OpenFeign
-- Spring Kafka / Apache Kafka 4.1.2
-- Spring Data JPA, Hibernate, Flyway và PostgreSQL 18.4
-- Spring Data Cassandra và Apache Cassandra 5.0.8
-- Maven multi-module
-- Docker Compose cho toàn bộ local stack
-- JUnit 5, Spring Test và Mockito
-
-## Yêu cầu môi trường
-
-- Docker Engine hoặc Docker Desktop có hỗ trợ Docker Compose v2
-- PowerShell, Bash hoặc một REST client để chạy smoke test
-- JDK 21 và Maven 3.9+ chỉ cần khi build/test trực tiếp trên host
-
-Kiểm tra nhanh:
-
-```powershell
-docker --version
-docker compose version
-```
-
-## Chạy project
-
-### 1. Build và khởi động toàn bộ hệ thống
-
-Tại thư mục gốc:
-
-```powershell
-docker compose up -d --build
-docker compose ps -a
-```
-
-Lệnh này build cả bốn Spring Boot image, khởi động database/messaging và tự sắp xếp dependency. Chờ `postgres`, `cassandra`, `kafka` healthy; `cassandra-init` phải kết thúc với exit code 0. Các endpoint local:
-
-- PostgreSQL: `localhost:5432`, database `devconnect_users`.
-- Cassandra: `localhost:9042`, keyspace `devconnect_feed`.
-- Kafka: `localhost:9092`.
-- Kafka UI: <http://localhost:8085>.
-- Swagger UI tổng hợp: <http://localhost:8090/>.
-- User API: `http://localhost:3000`.
-- Feed API: `http://localhost:8082`.
-- Search API: `http://localhost:8083`.
-- Notification API: `http://localhost:8084`.
-
-Trên Ubuntu/WSL, nếu `docker compose config --services` chỉ hiện 5 service, đang dùng source hoặc Compose file cũ. Xem [cách xác nhận và đồng bộ source](docs/DOCKER.md#3-đảm-bảo-đang-dùng-source-mới-nhất).
-
-### 2. Theo dõi service
-
-Xem trạng thái và log:
-
-```powershell
-docker compose ps -a
-docker compose logs -f user-service feed-service search-service notification-service
-```
-
-Nhấn `Ctrl+C` chỉ thoát chế độ theo dõi log; container vẫn chạy ở background.
-
-### 3. Kiểm tra end-to-end
-
-Project có sẵn ba user demo:
-
-| User | Trạng thái | Có thể tạo post |
-|---|---|---|
-| `u001` | `ACTIVE` | Có |
-| `u002` | `ACTIVE` | Có |
-| `u003` | `INACTIVE` | Không |
-
-Có thể tạo và cập nhật user qua User API:
-
-```powershell
-$user = @{
-  userId = "u004"
-  status = "ACTIVE"
-  email = "user@example.com"
-} | ConvertTo-Json
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:3000/api/users" `
-  -ContentType "application/json" `
-  -Body $user
-
-$status = @{
-  status = "INACTIVE"
-  email = "new-address@example.com"
-} | ConvertTo-Json
-Invoke-RestMethod `
-  -Method Put `
-  -Uri "http://localhost:3000/api/users/u004" `
-  -ContentType "application/json" `
-  -Body $status
-```
-
-Tạo post:
-
-```powershell
-$body = @{
-  authorId = "u001"
-  content  = "Hoc microservice voi Kafka"
-} | ConvertTo-Json
-
-$created = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8082/api/feed/posts" `
-  -ContentType "application/json" `
-  -Body $body
-
-$created
-```
-
-Sau khi consumer xử lý event, kiểm tra search và notification:
-
-```powershell
-Invoke-RestMethod "http://localhost:8083/api/search/posts?keyword=Kafka"
-Invoke-RestMethod "http://localhost:8084/api/notifications/users/u001"
-```
-
-Do xử lý Kafka là bất đồng bộ, hai truy vấn cuối có thể trả danh sách rỗng nếu gọi ngay lập tức; hãy thử lại sau một khoảng ngắn.
-
-Ví dụ tương đương trên Ubuntu/macOS:
-
-```bash
-curl -X POST http://localhost:8082/api/feed/posts \
-  -H 'Content-Type: application/json' \
-  -d '{"authorId":"u001","content":"Hoc microservice voi Kafka"}'
-
-curl 'http://localhost:8083/api/search/posts?keyword=Kafka'
-curl 'http://localhost:8084/api/notifications/users/u001'
-```
-
-### 4. Dừng môi trường
-
-```powershell
-docker compose down
-```
-
-PostgreSQL và Cassandra dùng named volume nên dữ liệu vẫn còn sau `down`. Chỉ dùng `docker compose down -v` khi muốn xóa toàn bộ dữ liệu local.
-
-## Build và test
-
-Chạy toàn bộ test từ root:
-
-```powershell
-mvn test
-```
-
-Build bốn executable JAR:
-
-```powershell
-mvn clean package
-```
-
-Chạy test riêng một module:
-
-```powershell
-mvn -pl feed-service test
-```
-
-Các test hiện có bao phủ Flyway migration/seed và create/update user trên H2, User API validation/error contract, OpenFeign adapter, Feed-to-User status contract, Cassandra mapping/logged batch, parallel validation, controller trả HTTP 201, Kafka initial replay của Search/Notification, search upsert và notification deduplication.
-
-## Cấu trúc repository
+## What runs where
 
 ```text
-.
-├── pom.xml                         # Parent POM và danh sách module
-├── docker-compose.yml              # Toàn bộ infrastructure và application stack
-├── .dockerignore                   # Loại artifact/metadata khỏi build context
-├── user-service/                   # User API, JPA, Flyway và Dockerfile
-├── feed-service/                   # Post API, Cassandra, Kafka và Dockerfile
-├── search-service/                 # Search consumer/API và Dockerfile
-├── notification-service/           # Notification consumer/API và Dockerfile
-├── docs/
-│   ├── README.md                   # Mục lục documentation
-│   ├── ARCHITECTURE.md             # Kiến trúc, luồng dữ liệu, consistency
-│   ├── API.md                      # REST API contract và ví dụ lỗi
-│   ├── EVENTS.md                   # Kafka event contract và semantics
-│   ├── DATABASE.md                 # PostgreSQL/Cassandra schema và query model
-│   ├── DOCKER.md                   # Docker, Ubuntu/WSL và troubleshooting
-│   └── DEVELOPMENT.md              # Setup, cấu hình, build, vận hành local
-└── ASYNC-JAVA.md                   # Giải thích chuyên sâu về Async Java
+Browser / Swagger UI
+        |
+        v
+API Gateway :8090  ----> Eureka :8761
+   |        |        |        |
+   v        v        v        v
+User      Feed     Search  Notification
+ :8081     :8082     :8083     :8084
+   |        |          ^         ^
+PostgreSQL Cassandra  \------- Kafka post-events -------/
+             |
+           Redis
 ```
 
-## Tài liệu chi tiết
+Only the Gateway is a public API boundary. Browser clients and Swagger UI must call `http://localhost:8090`; service ports `8081`–`8084` are for internal Compose traffic and optional local debugging.
 
-- [Mục lục documentation](docs/README.md)
-- [Kiến trúc hệ thống](docs/ARCHITECTURE.md)
-- [REST API reference](docs/API.md)
-- [Kafka event reference](docs/EVENTS.md)
-- [PostgreSQL và Cassandra](docs/DATABASE.md)
-- [Docker và Ubuntu/WSL](docs/DOCKER.md)
-- [Hướng dẫn phát triển và vận hành local](docs/DEVELOPMENT.md)
-- [Async Java trong DevConnect](ASYNC-JAVA.md)
+| Component | Eureka name | Default port | Responsibility |
+| --- | --- | ---: | --- |
+| API Gateway | `api-gateway` | 8090 | Public routes, CORS, aggregated Swagger UI |
+| Discovery Server | `discovery-server` | 8761 | Eureka registry |
+| User Service | `user-service` | 8081 | Users and user status |
+| Feed Service | `feed-service` | 8082 | Posts and feed read models |
+| Search Service | `search-service` | 8083 | In-memory post search projection |
+| Notification Service | `notification-service` | 8084 | In-memory post notifications |
 
-## Giới hạn hiện tại
+Feed Service uses Redis as a private, disposable two-level cache for posts and cursor-paged feed results. If Redis is unavailable, Feed reads fall back to Cassandra and cache degradation is exposed through actuator metrics.
 
-- Search index, notification và notification deduplication vẫn nằm trong `ConcurrentHashMap`; mỗi process rebuild từ các event còn được Kafka giữ lại, nên API có thể tạm thời trả dữ liệu thiếu trong lúc replay và không thể phục hồi event đã hết retention.
-- Cassandra feed hiện dùng một partition `feed_id=global`; phù hợp demo nhưng sẽ thành hot/unbounded partition ở quy mô lớn.
-- Publish Kafka là fire-and-observe: lỗi gửi event được ghi log nhưng không rollback post.
-- OpenFeign đã có connect/read timeout 5 giây nhưng chưa có retry, circuit breaker hoặc service discovery.
-- Chưa có retry policy, dead-letter topic hoặc schema registry cho Kafka.
-- Chưa có authentication/authorization, rate limiting, health endpoint và metrics.
-- Application image dùng multi-stage build và non-root runtime user, nhưng chưa có image signing/SBOM/security scanning trong pipeline.
-- Kafka UI dùng tag `latest`, phù hợp demo nhưng nên pin version trong môi trường ổn định.
+## Quick start
 
-Các giới hạn và hướng nâng cấp production được phân tích thêm trong [Kiến trúc hệ thống](docs/ARCHITECTURE.md#khả-năng-sẵn-sàng-cho-production).
+Prerequisites: Docker Engine with Docker Compose. For a host-only run, use JDK 21 and Maven 3.9+.
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Wait until the application containers are healthy, then open:
+
+| URL | Purpose |
+| --- | --- |
+| [Gateway Swagger UI](http://localhost:8090/swagger-ui.html) | Execute all public APIs through the Gateway |
+| [Eureka dashboard](http://localhost:8761) | Confirm the four business services are registered as `UP` |
+| [Kafka UI](http://localhost:8085) | Inspect the `post-events` topic |
+| [pgAdmin](http://localhost:5050) | Browse and manage the local PostgreSQL database |
+| [Cassandra Web](http://localhost:3001) | Inspect the local Cassandra keyspace and tables |
+
+For database UI, Redis cache inspection, and connection details, see [Docker operations](docs/DOCKER.md). Public request and cursor-paging examples are in the [API reference](docs/API.md).
+
+Create a user and post through the public boundary:
+
+```bash
+curl -i -X POST http://localhost:8090/api/users \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"u001","status":"ACTIVE","email":"u001@example.com"}'
+
+curl -i -X POST http://localhost:8090/api/feed/posts \
+  -H 'Content-Type: application/json' \
+  -d '{"authorId":"u001","content":"Hello from DevConnect"}'
+```
+
+Search and notifications are eventually consistent because they consume Kafka events. Retry briefly after creating a post:
+
+```bash
+curl 'http://localhost:8090/api/search/posts?keyword=DevConnect'
+curl 'http://localhost:8090/api/notifications/users/u001'
+```
+
+## Public API routes
+
+| Service | Gateway route |
+| --- | --- |
+| User | `/api/users` and `/api/users/**` |
+| Feed | `/api/feed/posts` and `/api/feed/posts/**` |
+| Search | `/api/search` and `/api/search/**` |
+| Notification | `/api/notifications` and `/api/notifications/**` |
+
+The Gateway uses Eureka-backed `lb://` routes. The User Service status path `/internal/users/{userId}/status` is routed unchanged for service-to-service and documented testing; it is not a frontend-facing business API.
+
+## CORS and OpenAPI
+
+The Gateway owns browser CORS and serves one aggregated OpenAPI document at `/v3/api-docs/aggregate`. Its local allowed origin defaults to `http://localhost:8090` and is configurable with `GATEWAY_ALLOWED_ORIGIN`. The Gateway fetches each service's `/v3/api-docs` through Eureka, namespaces component schemas and operation IDs, and publishes the merged document to the embedded Swagger UI. The aggregate server URL is `http://localhost:8090`, so Swagger's **Execute** button calls the Gateway instead of service ports directly.
+
+See [API reference](docs/API.md) and [OpenAPI and CORS](docs/OPENAPI.md) for requests, documents, and preflight verification.
+
+## Build and test
+
+Build all Maven modules from the repository root:
+
+```bash
+./mvnw clean verify
+```
+
+The current focused verification suite passes when excluding the legacy MVC-async expectation test:
+
+```bash
+./mvnw -Dtest='!FeedControllerAsyncTests' clean verify
+```
+
+`FeedControllerAsyncTests` currently expects an asynchronous MVC controller, while the checked-in Feed controller returns a synchronous `201 Created` response. This is a known test/code mismatch, not a Gateway or CORS failure.
+
+## Documentation
+
+Start with the [documentation index](docs/README.md).
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [API reference](docs/API.md)
+- [OpenAPI and CORS](docs/OPENAPI.md)
+- [Local development](docs/DEVELOPMENT.md)
+- [Docker operations](docs/DOCKER.md)
+- [Database ownership](docs/DATABASE.md)
+- [Event contract](docs/EVENTS.md)
+- [Java asynchronous processing](ASYNC-JAVA.md)
+
+## Demo limitations
+
+This repository is a learning/demo system. Search and notification data are in memory and are lost on restart; Kafka consumers do not persist a deduplication record; and no application-level authentication/authorization filter chain is currently configured. Production deployment needs durable projections, idempotency, observability, secrets management, and an explicit security design.
