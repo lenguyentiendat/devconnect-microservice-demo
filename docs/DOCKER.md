@@ -46,7 +46,7 @@ The service `expose` settings make business ports available on the Docker networ
 
 ## Redis cache operations
 
-Redis is an internal-only, disposable cache for Feed posts and cursor-paged feed results. The local container uses `allkeys-lfu`, has no persistence, and deliberately publishes no host port. Inspect it from inside Compose:
+Redis is an internal-only, disposable cache for Feed posts and cursor-paged feed results. The local container uses `allkeys-lfu`, has no persistence, and deliberately publishes no host port. The detailed architecture, configuration, manual verification, metrics and fallback procedure are in [Redis and Cache](REDIS_CACHE.md). Inspect it from inside Compose:
 
 ```bash
 docker compose exec redis redis-cli

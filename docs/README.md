@@ -16,11 +16,13 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 3. [PostgreSQL và Cassandra](DATABASE.md): schema, migration, query model và kiểm tra dữ liệu.
 4. [Kafka event reference](EVENTS.md): topic, payload, consumer group, delivery và compatibility.
 5. [Async Java](../ASYNC-JAVA.md): parallel validation bằng `CompletableFuture`, executor, OpenFeign blocking I/O và Kafka async.
+6. [Redis và Cache](REDIS_CACHE.md): cache hai tầng của Feed Service, cấu hình, vận hành và kiểm thử.
 
 ## Vận hành local
 
 - [Docker và Ubuntu/WSL](DOCKER.md): build image, healthcheck, log, restart, cập nhật source và troubleshooting.
 - [PostgreSQL và Cassandra](DATABASE.md): volume, truy vấn trực tiếp và reset dữ liệu.
+- [Redis và Cache](REDIS_CACHE.md): Redis local, cache keys, TTL, metrics và fallback.
 - [Phát triển và kiểm thử](DEVELOPMENT.md#8-troubleshooting): lỗi ứng dụng thường gặp.
 
 ## Bản đồ tài liệu
@@ -32,6 +34,7 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 | [API](API.md) | REST contract, status code và ví dụ | Client/backend developer |
 | [OPENAPI](OPENAPI.md) | Swagger UI tổng hợp và OpenAPI JSON cho 4 service | Client/backend developer |
 | [EVENTS](EVENTS.md) | Kafka contract và delivery semantics | Backend/platform developer |
+| [REDIS_CACHE](REDIS_CACHE.md) | Cache Caffeine/Redis, invalidation và xác minh | Backend/platform developer |
 | [DATABASE](DATABASE.md) | PostgreSQL/Flyway và Cassandra model | Backend/DBA |
 | [DOCKER](DOCKER.md) | Full-stack Compose trên Ubuntu/WSL | Developer/operator |
 | [DEVELOPMENT](DEVELOPMENT.md) | Maven, test, cấu hình và debug | Developer |

@@ -116,6 +116,7 @@ Start with the [documentation index](docs/README.md).
 - [Docker operations](docs/DOCKER.md)
 - [Database ownership](docs/DATABASE.md)
 - [Event contract](docs/EVENTS.md)
+- [Redis và Cache](docs/REDIS_CACHE.md)
 - [Java asynchronous processing](ASYNC-JAVA.md)
 
 ## Demo limitations
