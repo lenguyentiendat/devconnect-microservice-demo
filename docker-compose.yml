@@ -80,6 +80,8 @@ services:
   redis:
     image: redis:7.4-alpine
     container_name: devconnect-redis
+    ports:
+      - "6379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
