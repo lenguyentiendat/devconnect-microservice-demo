@@ -78,37 +78,35 @@ class FeedControllerTests {
     @Test
     void getPostsReturnsCursorPagedEnvelope() throws Exception {
         PostResponse post = new PostResponse("post-1", "u001", "Paged post", LocalDateTime.now());
-        when(feedService.getPosts(1, 20, null)).thenReturn(
-                new FeedPageResponse(java.util.List.of(post), 1, 20, true, "opaque", 1L)
+        when(feedService.getPosts(20, null, null)).thenReturn(
+                new FeedPageResponse(java.util.List.of(post), 20, true, post.createdAt(), post.postId(), 1L)
         );
 
         mockMvc.perform(get("/api/feed/posts")
-                        .param("pageNum", "1")
                         .param("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.items[0].postId").value("post-1"))
-                .andExpect(jsonPath("$.data.nextPageToken").value("opaque"));
+                .andExpect(jsonPath("$.data.nextLastPostId").value("post-1"));
     }
 
     @Test
-    void getPostsRejectsPageNumberBelowOne() throws Exception {
-        mockMvc.perform(get("/api/feed/posts").param("pageNum", "0"))
+    void getPostsRejectsInvalidPageSize() throws Exception {
+        mockMvc.perform(get("/api/feed/posts").param("pageSize", "0"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false));
     }
 
     @Test
-    void getPostsReturnsBadRequestEnvelopeForInvalidPageToken() throws Exception {
-        when(feedService.getPosts(2, 20, "tampered"))
-                .thenThrow(new BusinessException("Invalid page token"));
+    void getPostsReturnsBadRequestEnvelopeForPartialCursor() throws Exception {
+        when(feedService.getPosts(20, LocalDateTime.now(), null))
+                .thenThrow(new BusinessException("lastCreatedAt and lastPostId must be provided together"));
 
         mockMvc.perform(get("/api/feed/posts")
-                        .param("pageNum", "2")
                         .param("pageSize", "20")
-                        .param("pageToken", "tampered"))
+                        .param("lastCreatedAt", LocalDateTime.now().toString()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("Invalid page token"));
+                .andExpect(jsonPath("$.message").value("lastCreatedAt and lastPostId must be provided together"));
     }
 }

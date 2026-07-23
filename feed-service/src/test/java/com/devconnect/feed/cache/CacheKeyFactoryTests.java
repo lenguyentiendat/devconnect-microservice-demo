@@ -21,8 +21,7 @@ class CacheKeyFactoryTests {
             100,
             10,
             100,
-            "devconnect:cache:invalidation",
-            "page-token-secret"
+            "devconnect:cache:invalidation"
     ));
 
     @Test
@@ -33,13 +32,13 @@ class CacheKeyFactoryTests {
 
     @Test
     void pageKeyIncludesEnvironmentVersionRevisionSizeAndCursorHash() {
-        assertThat(keys.feedPage("global", 7, 20, "opaque-token"))
+        assertThat(keys.feedPage("global", 7, 20, java.time.LocalDateTime.parse("2026-07-22T10:00:00"), "550e8400-e29b-41d4-a716-446655440000"))
                 .startsWith("devconnect:local:feed:v1:page:global:rev:7:size:20:cursor:");
     }
 
     @Test
     void firstPageAndPrefixHaveStableLayouts() {
-        assertThat(keys.feedPage("global", 1, 20, null))
+        assertThat(keys.feedPage("global", 1, 20, null, null))
                 .isEqualTo("devconnect:local:feed:v1:page:global:rev:1:size:20:cursor:first");
         assertThat(keys.feedPagePrefix("global")).isEqualTo("devconnect:local:feed:v1:page:global:");
     }

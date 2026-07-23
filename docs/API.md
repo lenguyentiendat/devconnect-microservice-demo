@@ -61,24 +61,23 @@ Both fields are required. Feed Service checks the author's active status through
 ### Read posts
 
 `GET /api/feed/posts` returns a cursor-paged feed in an API envelope. The first
-page uses optional `pageNum` and `pageSize` parameters (defaults: `1` and `20`):
+page uses `pageSize` only (default: `20`):
 
 ```bash
-curl 'http://localhost:8090/api/feed/posts?pageNum=1&pageSize=20'
+curl 'http://localhost:8090/api/feed/posts?pageSize=20'
 ```
 
-When `data.hasNext` is `true`, request the next page with the returned token:
+When `data.hasNext` is `true`, request the next page with both cursor fields:
 
 ```bash
 curl --get 'http://localhost:8090/api/feed/posts' \
-  --data-urlencode 'pageNum=2' \
   --data-urlencode 'pageSize=20' \
-  --data-urlencode 'pageToken=TOKEN_FROM_PREVIOUS_RESPONSE'
+  --data-urlencode 'lastCreatedAt=2026-07-23T10:30:00' \
+  --data-urlencode 'lastPostId=5b990c7c-72b1-4af3-9f50-66c56d9ee94d'
 ```
 
-Clients must treat `pageToken` as opaque: do not parse, construct, or modify it.
-`pageToken` is required after page one. The response data contains `items`,
-`pageNum`, `pageSize`, `hasNext`, `nextPageToken`, and `feedRevision`.
+`lastCreatedAt` and `lastPostId` must be sent together. The response data contains
+`items`, `pageSize`, `hasNext`, `nextLastCreatedAt`, `nextLastPostId`, and `feedRevision`.
 
 `GET /api/feed/posts/{postId}` returns one post in an API envelope. Use the `postId` returned by creation.
 

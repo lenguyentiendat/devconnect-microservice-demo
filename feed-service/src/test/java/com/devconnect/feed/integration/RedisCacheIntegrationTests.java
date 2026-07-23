@@ -53,7 +53,6 @@ class RedisCacheIntegrationTests {
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", REDIS::getFirstMappedPort);
         registry.add("app.cache.enabled", () -> true);
-        registry.add("app.cache.page-token-secret", () -> "redis-integration-test-secret");
     }
 
     @Test

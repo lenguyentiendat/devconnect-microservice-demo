@@ -57,9 +57,8 @@ TTL có jitter mặc định 0% đến 10% để tránh nhiều key hết hạn 
 | CACHE_PAGE_L1_TTL / CACHE_PAGE_L2_TTL | TTL page | 10s / 60s |
 | CACHE_TTL_JITTER_PERCENT | app.cache.ttl-jitter-percent | 10 |
 | CACHE_INVALIDATION_CHANNEL | app.cache.invalidation-channel | devconnect:cache:invalidation |
-| CACHE_PAGE_TOKEN_SECRET | app.cache.page-token-secret | Bắt buộc; YAML local có giá trị phát triển |
 
-Đặt CACHE_ENABLED=false để dùng NoOpCacheService: ứng dụng vẫn chạy, nhưng mọi read đi thẳng tới Cassandra. Không dùng CACHE_ENVIRONMENT=local hoặc CACHE_PAGE_TOKEN_SECRET của Compose trong production.
+Đặt CACHE_ENABLED=false để dùng NoOpCacheService: ứng dụng vẫn chạy, nhưng mọi read đi thẳng tới Cassandra. Không dùng CACHE_ENVIRONMENT=local của Compose trong production.
 
 Compose cấu hình Feed Service kết nối redis:6379. Xem thêm [Docker operations](DOCKER.md#redis-cache-operations).
 
@@ -115,7 +114,7 @@ Scan phải in đúng key post. TTL phải là số dương; không cần đúng
 ### 4. Xác nhận cache page và revision
 
 ~~~bash
-curl -fsS 'http://localhost:8090/api/feed/posts?pageNum=1&pageSize=20'
+curl -fsS 'http://localhost:8090/api/feed/posts?pageSize=20'
 docker compose exec redis redis-cli GET \
   'devconnect:local:feed:v1:revision:global'
 docker compose exec redis redis-cli --scan \

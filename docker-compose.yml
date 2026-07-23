@@ -200,7 +200,6 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       CACHE_ENVIRONMENT: local
-      CACHE_PAGE_TOKEN_SECRET: devconnect-local-page-token-secret
       EUREKA_SERVER_URL: http://discovery-server:8761/eureka/
       EUREKA_PREFER_IP_ADDRESS: "true"
       OPENAPI_SERVER_URL: http://localhost:8090

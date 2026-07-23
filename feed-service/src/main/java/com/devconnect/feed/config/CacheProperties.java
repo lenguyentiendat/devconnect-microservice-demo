@@ -26,8 +26,7 @@ public record CacheProperties(
         @Positive @DefaultValue("100") int feedMaximumPageSize,
         @Min(0) @Max(25) @DefaultValue("10") int ttlJitterPercent,
         @Positive @DefaultValue("500") int scanBatchSize,
-        @NotBlank @DefaultValue("devconnect:cache:invalidation") String invalidationChannel,
-        @NotBlank String pageTokenSecret
+        @NotBlank @DefaultValue("devconnect:cache:invalidation") String invalidationChannel
 ) {
 
     public CacheTtls postTtls() {

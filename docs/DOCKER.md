@@ -61,11 +61,10 @@ Local cache configuration is supplied to Feed Service through these environment 
 | --- | --- | --- |
 | `CACHE_ENABLED` | Enables the two-level cache | `true` |
 | `CACHE_ENVIRONMENT` | Namespaces Redis keys | `local` |
-| `CACHE_PAGE_TOKEN_SECRET` | Signs opaque feed page tokens | required; Compose sets a local-only value |
 | `REDIS_CONNECT_TIMEOUT` | Redis connection timeout | `500ms` |
 | `REDIS_COMMAND_TIMEOUT` | Redis command timeout | `500ms` |
 
-For production, use a managed Redis Cluster or Sentinel deployment with TLS and ACLs; keep Redis off the public network. Store ACL credentials and `CACHE_PAGE_TOKEN_SECRET` in a secret manager, set bounded connection/command timeouts, and alert on memory/capacity, evictions, connection errors, latency, and cache-error metrics. Do not reuse the local Compose secret or treat the local Redis container as durable storage.
+For production, use a managed Redis Cluster or Sentinel deployment with TLS and ACLs; keep Redis off the public network. Store ACL credentials in a secret manager, set bounded connection/command timeouts, and alert on memory/capacity, evictions, connection errors, latency, and cache-error metrics. Do not treat the local Redis container as durable storage.
 
 ## Database UI
 

@@ -138,20 +138,16 @@ class CassandraPostStoreTests {
     }
 
     @Test
-    void findPageBindsSizeAndIncomingPagingState() {
-        ByteBuffer incomingState = ByteBuffer.wrap(new byte[] {9});
+    void findPageBindsCursorQueryAndLimit() {
         when(cqlSession.execute(org.mockito.ArgumentMatchers.any(SimpleStatement.class))).thenReturn(resultSet);
-        when(resultSet.getAvailableWithoutFetching()).thenReturn(0);
         when(resultSet.iterator()).thenReturn(Collections.emptyIterator());
-        when(resultSet.getExecutionInfo()).thenReturn(executionInfo);
 
-        postStore.findPage(20, incomingState);
+        postStore.findPage(20, Instant.parse("2026-07-14T08:30:00Z"), UUID.randomUUID());
 
         ArgumentCaptor<SimpleStatement> statementCaptor = ArgumentCaptor.forClass(SimpleStatement.class);
         verify(cqlSession).execute(statementCaptor.capture());
-        assertEquals(20, statementCaptor.getValue().getPageSize());
-        assertEquals(incomingState, statementCaptor.getValue().getPagingState());
-        assertEquals(List.of(CassandraPostStore.GLOBAL_FEED), statementCaptor.getValue().getPositionalValues());
+        assertTrue(statementCaptor.getValue().getQuery().contains("post_id >"));
+        assertEquals(CassandraPostStore.GLOBAL_FEED, statementCaptor.getValue().getPositionalValues().getFirst());
     }
 
     @Test
@@ -164,11 +160,9 @@ class CassandraPostStoreTests {
         when(row.getString("content")).thenReturn("Cassandra");
         when(row.getInstant("created_at")).thenReturn(createdAt);
         when(cqlSession.execute(org.mockito.ArgumentMatchers.any(SimpleStatement.class))).thenReturn(resultSet);
-        when(resultSet.getAvailableWithoutFetching()).thenReturn(1);
         when(resultSet.iterator()).thenReturn(List.of(row).iterator());
-        when(resultSet.getExecutionInfo()).thenReturn(executionInfo);
 
-        FeedPage page = postStore.findPage(20, null);
+        FeedPage page = postStore.findPage(20, null, null);
 
         assertEquals(List.of("Cassandra"), page.items().stream().map(PostResponse::content).toList());
         assertEquals(LocalDateTime.ofInstant(createdAt, ZoneOffset.UTC), page.items().getFirst().createdAt());

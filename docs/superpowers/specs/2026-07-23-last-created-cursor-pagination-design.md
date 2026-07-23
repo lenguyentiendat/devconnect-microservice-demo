@@ -62,4 +62,3 @@ integration test configuration and Redis cache guide to use the two-field cursor
   of lastCreatedAt|lastPostId.
 - Existing cache-tier, invalidation, revision and Redis-failure fallback tests
   remain covered.
-

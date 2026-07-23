@@ -49,7 +49,6 @@ app:
   cache:
     enabled: ${CACHE_ENABLED:true}
     environment: ${CACHE_ENVIRONMENT:local}
-    page-token-secret: ${CACHE_PAGE_TOKEN_SECRET:devconnect-local-page-token-secret}
   openapi:
     server-url: ${OPENAPI_SERVER_URL:http://localhost:8090}
   async:

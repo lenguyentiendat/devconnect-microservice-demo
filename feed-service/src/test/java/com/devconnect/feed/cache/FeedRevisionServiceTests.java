@@ -91,8 +91,7 @@ class FeedRevisionServiceTests {
                 100,
                 0,
                 100,
-                "devconnect:cache:invalidation",
-                "page-token-secret"
+                "devconnect:cache:invalidation"
         );
     }
 }

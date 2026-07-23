@@ -48,8 +48,8 @@ class FeedOpenApiTests {
                 .andExpect(jsonPath("$.paths['/api/feed/posts'].get").exists())
                 .andExpect(jsonPath("$.paths['/api/feed/posts'].post").exists())
                 .andExpect(jsonPath("$.paths['/api/feed/posts/{postId}'].get").exists())
-                .andExpect(jsonPath("$.paths['/api/feed/posts'].get.parameters[?(@.name == 'pageNum')]").exists())
                 .andExpect(jsonPath("$.paths['/api/feed/posts'].get.parameters[?(@.name == 'pageSize')]").exists())
-                .andExpect(jsonPath("$.paths['/api/feed/posts'].get.parameters[?(@.name == 'pageToken')]").exists());
+                .andExpect(jsonPath("$.paths['/api/feed/posts'].get.parameters[?(@.name == 'lastCreatedAt')]").exists())
+                .andExpect(jsonPath("$.paths['/api/feed/posts'].get.parameters[?(@.name == 'lastPostId')]").exists());
     }
 }

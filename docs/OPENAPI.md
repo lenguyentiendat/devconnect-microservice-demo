@@ -58,9 +58,9 @@ The Gateway is Spring Cloud Gateway WebFlux. The aggregate controller calls serv
 
 The merged document declares `http://localhost:8090` as its server URL. Consequently, Swagger **Try it out** calls remain on the Gateway and use the normal business routes, such as `/api/users`, `/api/feed/posts`, `/api/search/posts`, and `/api/notifications/users/{userId}`.
 
-For `GET /api/feed/posts`, Swagger exposes `pageNum`, `pageSize`, and
-`pageToken` query parameters. Start without a token; when `hasNext` is true,
-send the returned opaque `nextPageToken` with the next page request. The Feed
+For `GET /api/feed/posts`, Swagger exposes `pageSize`, `lastCreatedAt`, and
+`lastPostId` query parameters. Start without cursor fields; when `hasNext` is true,
+send both returned next cursor fields with the next page request. The Feed
 operation still executes through `http://localhost:8090` on the Gateway.
 
 ## CORS policy

@@ -11,7 +11,6 @@ import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.event.PostEventPublisher;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.persistence.PostStore;
-import com.devconnect.feed.paging.PageTokenCodec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -47,8 +46,7 @@ class FeedServiceUserContractTests {
                 new CacheKeyFactory(cacheProperties),
                 cacheProperties,
                 mock(FeedRevisionService.class),
-                mock(CacheInvalidationPublisher.class),
-                new PageTokenCodec("test-page-token-secret")
+                mock(CacheInvalidationPublisher.class)
         );
     }
 
@@ -87,7 +85,7 @@ class FeedServiceUserContractTests {
                 Duration.ofSeconds(45), Duration.ofMinutes(5),
                 Duration.ofSeconds(10), Duration.ofMinutes(1),
                 20, 100, 0, 100,
-                "devconnect:cache:invalidation", "page-token-secret"
+                "devconnect:cache:invalidation"
         );
     }
 }

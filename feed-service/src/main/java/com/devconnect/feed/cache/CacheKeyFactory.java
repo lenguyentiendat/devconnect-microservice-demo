@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 public class CacheKeyFactory {
@@ -27,14 +28,18 @@ public class CacheKeyFactory {
         return prefix + "revision:" + requireText(feedId, "feedId");
     }
 
-    public String feedPage(String feedId, long revision, int size, String token) {
+    public String feedPage(String feedId, long revision, int size, LocalDateTime lastCreatedAt, String lastPostId) {
         if (revision < 0) {
             throw new IllegalArgumentException("revision must not be negative");
         }
         if (size <= 0) {
             throw new IllegalArgumentException("size must be positive");
         }
-        return feedPagePrefix(feedId) + "rev:" + revision + ":size:" + size + ":cursor:" + cursorHash(token);
+        if ((lastCreatedAt == null) != (lastPostId == null || lastPostId.isBlank())) {
+            throw new IllegalArgumentException("lastCreatedAt and lastPostId must be provided together");
+        }
+        String cursor = lastCreatedAt == null ? null : lastCreatedAt + "|" + lastPostId;
+        return feedPagePrefix(feedId) + "rev:" + revision + ":size:" + size + ":cursor:" + cursorHash(cursor);
     }
 
     public String feedPagePrefix(String feedId) {

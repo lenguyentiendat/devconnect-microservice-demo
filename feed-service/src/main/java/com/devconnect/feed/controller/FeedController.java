@@ -14,6 +14,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.time.LocalDateTime;
 
 @RestController
 @RequestMapping("/api/feed/posts")
@@ -42,17 +43,17 @@ public class FeedController {
     }
 
     @GetMapping
-    @Operation(summary = "List posts", description = "Return a cursor-paged feed. pageToken is required after page one.")
+    @Operation(summary = "List posts", description = "Return a cursor-paged feed. Supply lastCreatedAt and lastPostId together after page one.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Posts found")
     public ApiResponse<FeedPageResponse> getPosts(
-            @Parameter(description = "One-based page number", example = "1", schema = @Schema(defaultValue = "1", minimum = "1"))
-            @RequestParam(defaultValue = "1") @Min(1) int pageNum,
             @Parameter(description = "Number of posts to return; the configured maximum is enforced by the service", example = "20", schema = @Schema(defaultValue = "20", minimum = "1"))
             @RequestParam(defaultValue = "20") @Min(1) int pageSize,
-            @Parameter(description = "Opaque cursor returned by the preceding page; required after page one", example = "eyJ2IjoxLCJwcyI6Ii4uLiJ9")
-            @RequestParam(required = false) String pageToken
+            @Parameter(description = "Created time of the final item in the preceding page", example = "2026-07-23T10:30:00")
+            @RequestParam(required = false) LocalDateTime lastCreatedAt,
+            @Parameter(description = "Post ID of the final item in the preceding page")
+            @RequestParam(required = false) String lastPostId
     ) {
-        return ApiResponse.success("Posts found", feedService.getPosts(pageNum, pageSize, pageToken));
+        return ApiResponse.success("Posts found", feedService.getPosts(pageSize, lastCreatedAt, lastPostId));
     }
 
     @GetMapping("/{postId}")

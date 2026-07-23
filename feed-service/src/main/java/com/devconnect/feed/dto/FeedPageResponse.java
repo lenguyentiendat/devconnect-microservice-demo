@@ -1,13 +1,14 @@
 package com.devconnect.feed.dto;
 
 import java.util.List;
+import java.time.LocalDateTime;
 
 public record FeedPageResponse(
         List<PostResponse> items,
-        int pageNum,
         int pageSize,
         boolean hasNext,
-        String nextPageToken,
+        LocalDateTime nextLastCreatedAt,
+        String nextLastPostId,
         long feedRevision
 ) {
 }

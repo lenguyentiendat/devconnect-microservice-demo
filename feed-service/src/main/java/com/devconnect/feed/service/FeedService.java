@@ -16,14 +16,12 @@ import com.devconnect.feed.dto.UserStatusResponse;
 import com.devconnect.feed.exception.BusinessException;
 import com.devconnect.feed.event.PostCreatedEvent;
 import com.devconnect.feed.event.PostEventPublisher;
-import com.devconnect.feed.paging.PageTokenCodec;
 import com.devconnect.feed.persistence.PostStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
-import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -51,7 +49,6 @@ public class FeedService {
     private final CacheProperties cacheProperties;
     private final FeedRevisionService feedRevisionService;
     private final CacheInvalidationPublisher invalidationPublisher;
-    private final PageTokenCodec pageTokenCodec;
 
     public FeedService(
             UserServiceAdapter userServiceAdapter,
@@ -62,8 +59,7 @@ public class FeedService {
             CacheKeyFactory cacheKeyFactory,
             CacheProperties cacheProperties,
             FeedRevisionService feedRevisionService,
-            CacheInvalidationPublisher invalidationPublisher,
-            PageTokenCodec pageTokenCodec
+            CacheInvalidationPublisher invalidationPublisher
     ) {
         this.userServiceAdapter = userServiceAdapter;
         this.postEventPublisher = postEventPublisher;
@@ -74,7 +70,6 @@ public class FeedService {
         this.cacheProperties = cacheProperties;
         this.feedRevisionService = feedRevisionService;
         this.invalidationPublisher = invalidationPublisher;
-        this.pageTokenCodec = pageTokenCodec;
     }
 
     public PostResponse createPost(CreatePostRequest request) {
@@ -200,85 +195,68 @@ public class FeedService {
         return postStore.findAll();
     }
 
-    public FeedPageResponse getPosts(int pageNum, int pageSize, String pageToken) {
-        String normalizedPageToken = normalizePageToken(pageToken);
-        validatePageRequest(pageNum, pageSize, normalizedPageToken);
-        ByteBuffer pagingState = decodePageToken(normalizedPageToken);
+    public FeedPageResponse getPosts(int pageSize, LocalDateTime lastCreatedAt, String lastPostId) {
+        UUID cursorPostId = validatePageRequest(pageSize, lastCreatedAt, lastPostId);
 
         if (!cacheProperties.enabled()) {
-            return loadPage(pageNum, pageSize, pagingState, 0L);
+            return loadPage(pageSize, lastCreatedAt, cursorPostId, 0L);
         }
 
         long revision = feedRevisionService.current(GLOBAL_FEED);
         if (revision <= 0) {
-            return loadPage(pageNum, pageSize, pagingState, 0L);
+            return loadPage(pageSize, lastCreatedAt, cursorPostId, 0L);
         }
 
         FeedPageResponse cachedPage = cacheService.getOrLoad(
-                cacheKeyFactory.feedPage(GLOBAL_FEED, revision, pageSize, normalizedPageToken),
+                cacheKeyFactory.feedPage(GLOBAL_FEED, revision, pageSize, lastCreatedAt, lastPostId),
                 FeedPageResponse.class,
                 cacheProperties.pageTtls(),
-                () -> loadPage(pageNum, pageSize, pagingState, revision)
+                () -> loadPage(pageSize, lastCreatedAt, cursorPostId, revision)
         );
-        return withRequestMetadata(cachedPage, pageNum, pageSize, revision);
+        return withRequestMetadata(cachedPage, pageSize, revision);
     }
 
-    private String normalizePageToken(String pageToken) {
-        return pageToken == null || pageToken.isBlank() ? null : pageToken;
-    }
-
-    private void validatePageRequest(int pageNum, int pageSize, String pageToken) {
-        if (pageNum < 1) {
-            throw new BusinessException("pageNum must be at least 1");
-        }
+    private UUID validatePageRequest(int pageSize, LocalDateTime lastCreatedAt, String lastPostId) {
         if (pageSize < 1 || pageSize > cacheProperties.feedMaximumPageSize()) {
             throw new BusinessException(
                     "pageSize must be between 1 and " + cacheProperties.feedMaximumPageSize()
             );
         }
-        if (pageNum > 1 && (pageToken == null || pageToken.isBlank())) {
-            throw new BusinessException("pageToken is required when pageNum is greater than 1");
+        if ((lastCreatedAt == null) != (lastPostId == null || lastPostId.isBlank())) {
+            throw new BusinessException("lastCreatedAt and lastPostId must be provided together");
         }
-    }
-
-    private ByteBuffer decodePageToken(String pageToken) {
-        if (pageToken == null) {
-            return null;
-        }
+        if (lastCreatedAt == null) return null;
         try {
-            return pageTokenCodec.decode(pageToken);
+            return UUID.fromString(lastPostId);
         } catch (IllegalArgumentException exception) {
-            throw new BusinessException("Invalid page token");
+            throw new BusinessException("Invalid lastPostId");
         }
     }
 
-    private FeedPageResponse loadPage(int pageNum, int pageSize, ByteBuffer pagingState, long revision) {
-        FeedPage page = postStore.findPage(pageSize, pagingState);
-        String nextPageToken = page.nextPagingState() == null
-                ? null
-                : pageTokenCodec.encode(page.nextPagingState());
+    private FeedPageResponse loadPage(int pageSize, LocalDateTime lastCreatedAt, UUID lastPostId, long revision) {
+        FeedPage page = postStore.findPage(pageSize, lastCreatedAt == null ? null : lastCreatedAt.toInstant(UTC), lastPostId);
+        PostResponse last = page.hasNext() ? page.items().getLast() : null;
         return new FeedPageResponse(
                 page.items(),
-                pageNum,
                 pageSize,
-                nextPageToken != null,
-                nextPageToken,
+                page.hasNext(),
+                last == null ? null : last.createdAt(),
+                last == null ? null : last.postId(),
                 revision
         );
     }
 
     private FeedPageResponse withRequestMetadata(
             FeedPageResponse page,
-            int pageNum,
             int pageSize,
             long revision
     ) {
         return new FeedPageResponse(
                 page.items(),
-                pageNum,
                 pageSize,
                 page.hasNext(),
-                page.nextPageToken(),
+                page.nextLastCreatedAt(),
+                page.nextLastPostId(),
                 revision
         );
     }
