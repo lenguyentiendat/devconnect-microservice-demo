@@ -117,9 +117,7 @@ public class CassandraPostStore implements PostStore {
     }
 
     private List<PostResponse> query(String cql, Object... values) {
-        var builder = SimpleStatement.builder(cql);
-        for (Object value : values) builder.addPositionalValue(value);
-        ResultSet result = cqlSession.execute(builder.build());
+        ResultSet result = cqlSession.execute(SimpleStatement.newInstance(cql, values));
         List<PostResponse> items = new ArrayList<>();
         result.forEach(row -> items.add(toResponse(row)));
         return items;
