@@ -24,12 +24,7 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      ddl-auto: validate
-
-  flyway:
-    enabled: true
-    placeholders:
-      emailGeneratedStorage: STORED
+      ddl-auto: update
 
 eureka:
   client:

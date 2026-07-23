@@ -16,6 +16,8 @@ import java.util.Optional;
 @Service
 public class UserService {
 
+    private static final String EMAIL_UNIQUE_CONSTRAINT = "uk_users_email";
+
     private final UserRepository userRepository;
 
     public UserService(UserRepository userRepository) {
@@ -76,7 +78,7 @@ public class UserService {
         while (current != null) {
             String message = current.getMessage();
             if (message != null && message.toLowerCase(Locale.ROOT)
-                    .contains("users_email_lower_unique")) {
+                    .contains(EMAIL_UNIQUE_CONSTRAINT)) {
                 return true;
             }
             current = current.getCause();

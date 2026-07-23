@@ -95,7 +95,7 @@ class UserServiceTests {
         when(userRepository.saveAndFlush(any(UserEntity.class)))
                 .thenThrow(new DataIntegrityViolationException(
                         "duplicate email",
-                        new IllegalStateException("users_email_lower_unique")
+                        new IllegalStateException("uk_users_email")
                 ));
 
         var exception = assertThrows(

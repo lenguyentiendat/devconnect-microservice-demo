@@ -30,58 +30,35 @@ Service không truy cập trực tiếp database của service khác. Feed Servi
 
 Application đọc cấu hình từ `POSTGRES_URL`, `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`.
 
-### Schema và migration
+### Schema do Hibernate quản lý
 
-Migration nằm tại:
+User Service dùng `spring.jpa.hibernate.ddl-auto=update`. Khi kết nối tới một
+database PostgreSQL rỗng, Hibernate tạo và đồng bộ bảng `users` từ
+`UserEntity`:
 
-```text
-user-service/src/main/resources/db/migration/V1__create_users.sql
-user-service/src/main/resources/db/migration/V2__add_user_email.sql
-```
-
-Schema:
-
-```sql
-CREATE TABLE users (
-    user_id VARCHAR(64) PRIMARY KEY,
-    status VARCHAR(32) NOT NULL,
-    email VARCHAR(254),
-    email_normalized VARCHAR(254)
-        GENERATED ALWAYS AS (LOWER(email)) STORED,
-    CONSTRAINT users_status_check
-        CHECK (status IN ('ACTIVE', 'INACTIVE'))
-);
-
-CREATE UNIQUE INDEX users_email_lower_unique
-    ON users (email_normalized);
-```
-
-Migration seed ba user:
-
-| ID | Status |
+| Cột | Ràng buộc từ mapping |
 |---|---|
-| `u001` | `ACTIVE` |
-| `u002` | `ACTIVE` |
-| `u003` | `INACTIVE` |
+| `user_id` | Primary key, tối đa 64 ký tự |
+| `status` | Bắt buộc, tối đa 32 ký tự |
+| `email` | Nullable, tối đa 254 ký tự, unique |
 
-Flyway chạy trước khi JPA EntityManager sẵn sàng. Hibernate dùng `ddl-auto=validate`, vì vậy:
+Email được chuẩn hóa thành chữ thường trước khi lưu, vì vậy unique constraint
+trên `email` cũng chặn email trùng khác hoa/thường. Service vẫn kiểm tra trước
+khi ghi để trả HTTP 409 rõ ràng.
 
-- Flyway là nguồn sự thật của schema.
-- Hibernate không tự tạo hoặc tự cập nhật table.
-- Mapping/schema sai làm User Service fail startup.
+Không có user demo được tự động seed. Tạo user bằng API trước khi dùng Feed
+Service:
 
-`V2__add_user_email.sql` thêm `email` và generated column `email_normalized = LOWER(email)`, rồi tạo unique index trên giá trị normalized. PostgreSQL yêu cầu từ khóa `STORED`; integration test H2 dùng cùng migration nhưng thay placeholder Flyway `emailGeneratedStorage` bằng chuỗi rỗng vì H2 không nhận từ khóa này.
+```bash
+curl -X POST http://localhost:8081/api/users \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"u001","status":"ACTIVE","email":"u001@example.com"}'
+```
 
-Hai cột mới để nullable nhằm migrate an toàn khi database đã có dữ liệu. Ba user seed và mọi record cũ tiếp tục có email `NULL`; migration không tạo email giả. API bắt buộc email cho user mới, còn PUT không gửi email vẫn tương thích và giữ giá trị hiện tại. Chỉ nên thêm constraint `NOT NULL` trong migration sau khi operator đã chuẩn bị email thật cho toàn bộ record cũ.
-
-Service kiểm tra duplicate trước khi ghi để trả lỗi rõ ràng, còn `users_email_lower_unique` là lớp bảo vệ race condition cuối cùng ở database. Primary key và status check hiện có vẫn giữ nguyên.
-
-### Quy tắc migration
-
-- Không sửa migration đã chạy ở môi trường được chia sẻ.
-- Thêm file mới theo mẫu `V2__description.sql`, `V3__description.sql`.
-- Schema change và entity mapping phải được cập nhật cùng nhau.
-- Không dùng `ddl-auto=update` thay Flyway.
+`ddl-auto=update` phù hợp cho môi trường local/demo và thay đổi schema có tính
+bổ sung. Với thay đổi phá vỡ hoặc dữ liệu production, cần một quy trình quản
+trị database riêng; Hibernate không thay thế kế hoạch backup/migration vận
+hành.
 
 ### Kiểm tra dữ liệu
 
@@ -89,14 +66,6 @@ Service kiểm tra duplicate trước khi ghi để trả lỗi rõ ràng, còn 
 docker compose exec postgres \
   psql -U devconnect -d devconnect_users \
   -c "SELECT user_id, status, email FROM users ORDER BY user_id;"
-```
-
-Flyway history:
-
-```bash
-docker compose exec postgres \
-  psql -U devconnect -d devconnect_users \
-  -c "SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
 ```
 
 ## 3. Cassandra của Feed Service
@@ -211,7 +180,7 @@ docker compose exec cassandra \
 
 Sau reset:
 
-1. PostgreSQL tạo database rỗng; User Service chạy Flyway và seed lại user.
+1. PostgreSQL tạo database rỗng; User Service dùng Hibernate để tạo schema. Tạo user qua `POST /api/users` khi cần dữ liệu demo.
 2. Cassandra Init tạo keyspace.
 3. Feed Service tạo table khi khởi động.
 

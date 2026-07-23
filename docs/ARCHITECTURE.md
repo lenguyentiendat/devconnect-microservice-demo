@@ -15,13 +15,7 @@ Use case trung tâm là tạo post. Tác giả phải tồn tại và có trạn
 
 ### `user-service`
 
-Sở hữu thông tin trạng thái user trong PostgreSQL, cung cấp `POST /api/users`, `PUT /api/users/{userId}` và endpoint nội bộ `GET /internal/users/{userId}/status`. Spring Data JPA cung cấp repository; Flyway quản lý schema và seed data.
-
-Dữ liệu demo được tạo bởi migration `V1__create_users.sql`:
-
-- `u001`: `ACTIVE`
-- `u002`: `ACTIVE`
-- `u003`: `INACTIVE`
+Sở hữu thông tin trạng thái user trong PostgreSQL, cung cấp `POST /api/users`, `PUT /api/users/{userId}` và endpoint nội bộ `GET /internal/users/{userId}/status`. Spring Data JPA/Hibernate quản lý schema local/demo với `ddl-auto=update`; không có user demo được seed tự động.
 
 Theo lựa chọn compact của demo, `UserInternalController` chứa cả hai public write endpoint và internal status lookup. `UserService` tách business rule create/update khỏi HTTP adapter; update chỉ thay đổi status và trả `404` nếu user chưa tồn tại.
 
@@ -160,7 +154,7 @@ Không service nào đọc trực tiếp storage của service khác. `feed-serv
 
 ### PostgreSQL schema
 
-Flyway tạo bảng `users(user_id varchar primary key, status varchar not null)` và check constraint giới hạn status ở `ACTIVE`/`INACTIVE`. Hibernate chạy với `ddl-auto=validate`, do đó application không tự sửa schema và sẽ fail startup nếu mapping không khớp migration.
+Hibernate tạo/cập nhật bảng `users` từ `UserEntity` khi dùng môi trường local/demo (`ddl-auto=update`). `user_id` là primary key; `status` bắt buộc; `email` được chuẩn hóa về lowercase trước khi lưu và có unique constraint. Client tạo user qua `POST /api/users` trước khi tạo post.
 
 ### Cassandra query model
 

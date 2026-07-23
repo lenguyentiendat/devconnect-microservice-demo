@@ -35,7 +35,7 @@ Trang này là điểm bắt đầu cho toàn bộ tài liệu của project. Ch
 | [OPENAPI](OPENAPI.md) | Swagger UI tổng hợp và OpenAPI JSON cho 4 service | Client/backend developer |
 | [EVENTS](EVENTS.md) | Kafka contract và delivery semantics | Backend/platform developer |
 | [REDIS_CACHE](REDIS_CACHE.md) | Cache Caffeine/Redis, invalidation và xác minh | Backend/platform developer |
-| [DATABASE](DATABASE.md) | PostgreSQL/Flyway và Cassandra model | Backend/DBA |
+| [DATABASE](DATABASE.md) | PostgreSQL/Hibernate và Cassandra model | Backend/DBA |
 | [DOCKER](DOCKER.md) | Full-stack Compose trên Ubuntu/WSL | Developer/operator |
 | [DEVELOPMENT](DEVELOPMENT.md) | Maven, test, cấu hình và debug | Developer |
 | [ASYNC-JAVA](../ASYNC-JAVA.md) | Parallelism trong Feed Service và async qua Kafka | Java developer |

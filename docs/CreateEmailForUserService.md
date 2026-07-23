@@ -31,13 +31,13 @@ Requirements:
 4. Preserve backward compatibility where possible.
     - Do not rename or remove existing API fields.
     - Do not unnecessarily change endpoint paths or response structures.
-    - If existing database records may not have an email, create a safe migration strategy based on the project’s current migration tool.
+    - If existing database records may not have an email, create a safe schema-update strategy based on the project’s current bootstrap mechanism.
     - Do not invent fake email values for existing users unless the project explicitly requires a backfill strategy.
     - Explain any migration limitation that requires manual data preparation.
 
-5. Database migration.
-    - Detect whether the project uses Flyway, Liquibase, schema scripts, JPA auto-DDL, or another mechanism.
-    - Create the appropriate migration following the project’s naming convention.
+5. Database schema management.
+    - Detect whether the project uses schema scripts, JPA auto-DDL, or another mechanism.
+    - Update the appropriate schema definition following the project’s conventions.
     - Add the email column and a case-insensitive uniqueness strategy if supported by the current database.
     - Make the migration safe for existing data.
 
